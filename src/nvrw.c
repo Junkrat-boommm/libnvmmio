@@ -119,14 +119,18 @@ static inline void trunc_fit_fd(int fd) {
 	}
 }
 
+/* 拓展文件可占用空间大小
+ * current_file_size <= 1GB  ->   1GB
+ * current_file_size > 1GB   ->   
+ */
 static inline size_t trunc_expand_fd(int fd, size_t current_file_size) {
   size_t ret = current_file_size;
   int indirectedFd = fd_indirection[fd];
   if (current_file_size < IO_MAP_SIZE) {
-    if (posix_fallocate(indirectedFd, 0, IO_MAP_SIZE) < 0) {
+    if (posix_fallocate(indirectedFd, 0, IO_MAP_SIZE) < 0) { // 扩展磁盘空间，可以用于申请NVM上的空间？
       LIBNVMMIO_DEBUG("posix_fallocate error");
     } else {
-      fd_table[indirectedFd].current_file_size = IO_MAP_SIZE;
+      fd_table[indirectedFd].current_file_size = IO_MAP_SIZE; // 扩展成功
       ret = IO_MAP_SIZE;
     }
   } else {
