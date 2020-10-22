@@ -52,7 +52,7 @@ static inline void nvmmio_fence(void) {
   LIBNVMMIO_INIT_TIME(nvmmio_fence_time);
   LIBNVMMIO_START_TIME(nvmmio_fence_t, nvmmio_fence_time);
 
-  pmem_drain();
+  pmem_drain();/* 调用SFENCE，确保flush全部完成 */
 
   LIBNVMMIO_END_TIME(nvmmio_fence_t, nvmmio_fence_time);
 }
@@ -62,7 +62,7 @@ static inline void nvmmio_write(void *dest, const void *src, size_t n,
   LIBNVMMIO_INIT_TIME(nvmmio_write_time);
   LIBNVMMIO_START_TIME(nvmmio_write_t, nvmmio_write_time);
 
-  pmem_memcpy_nodrain(dest, src, n);
+  pmem_memcpy_nodrain(dest, src, n);/* 从内存向PM拷贝数据，但不flush */
 
   if (fence) {
     nvmmio_fence();
@@ -102,16 +102,18 @@ static inline void atomic_decrease(int *count) {
   } while (!__sync_bool_compare_and_swap(count, old, new));
 }
 
+/* CONFUSE:这个函数的功能 */
 static inline void init_base_address(void) {
   void *addr;
 
   if (base_mmap_addr == NULL) {
     addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+                MAP_PRIVATE | MAP_ANONYMOUS, 0, 0); /* 文件描述符为0也是代表匿名映射？ */
     if (__glibc_unlikely(addr == MAP_FAILED)) {
       handle_error("mmap for base_mmap_addr");
     }
 
+    /* 这能够实现啥？ */
     base_mmap_addr = (void *)(addr - (1UL << 38)); /* 256 GB */
     base_mmap_addr = ALIGN_TABLE((base_mmap_addr + TABLE_SIZE));
     munmap(addr, PAGE_SIZE);
@@ -173,7 +175,6 @@ static void sync_uma(uma_t *uma) {
             atomic_decrease(&table->count);
             continue;
           }
-
           /* Release the writer lock of the log entry */
           s = pthread_rwlock_unlock(entry->rwlockp);
           if (__glibc_unlikely(s != 0)) {
@@ -208,6 +209,10 @@ void init_libnvmmio(void) {
   }
 }
 
+/**
+ * @brief Get the base mmap addr object
+ * 按页分配文件映射空间(1 << 21) 
+ */
 static inline void *get_base_mmap_addr(void *addr, size_t n) {
   void *old, *new;
 
@@ -216,11 +221,13 @@ static inline void *get_base_mmap_addr(void *addr, size_t n) {
     return addr;
   }
 
+  /* 连续的按照table_size来进行映射
+   * 循坏用于处理多线程 */
+  /* BUG: 频繁多次的映射文件，是否会导致内存访问越界 */
   do {
     old = base_mmap_addr;
     new = (void *)ALIGN_TABLE((base_mmap_addr + (n + TABLE_SIZE)));
   } while (!__sync_bool_compare_and_swap(&base_mmap_addr, old, new));
-
   return old;
 }
 
@@ -294,7 +301,7 @@ void *nvmmap(void *addr, size_t len, int prot, int flags, int fd,
   uma->end = mmap_addr + len;
   uma->ino = (unsigned long)sb.st_ino;
   uma->offset = offset;
-  uma->epoch = 1;
+  uma->epoch = 1; // 每个file都对应着一个全局的epoch
   uma->policy = DEFAULT_POLICY;
 
   if (uma->policy == UNDO) {
@@ -339,11 +346,19 @@ int nvmunmap(void *addr, size_t n) {
 	return nvmunmap_uma(addr, n, uma);
 }
 
+/**
+ * @brief 对未被提交的log entry进行写入
+ * 
+ * @param entry 
+ * @param uma 
+ */
+// CONFUSE：论文中写的是后台同步
+// XXX
 static void sync_entry(log_entry_t *entry, uma_t *uma) {
   void *dst, *src;
 
   if (entry->policy == REDO) {
-    dst = entry->dst + entry->offset;
+    dst = entry->dst + entry->offset; /* CONFUSE： 这两个为啥能得到dst，复制在 */
     src = entry->data + entry->offset;
     nvmmio_write(dst, src, entry->len, true);
   }
@@ -351,7 +366,7 @@ static void sync_entry(log_entry_t *entry, uma_t *uma) {
   entry->policy = uma->policy;
   entry->len = 0;
   entry->offset = 0;
-  nvmmio_flush(entry, sizeof(log_entry_t), true);
+  nvmmio_flush(entry, sizeof(log_entry_t), true);/* 持久化到PM */
 }
 
 //                (1)                  (2)                  (3)
@@ -505,6 +520,12 @@ void nvmemcpy_read_redo(void *dest, const void *src, size_t record_size) {
   LIBNVMMIO_END_TIME(nvmemcpy_read_redo_t, nvmemcpy_read_redo_time);
 }
 
+/**
+ * @brief 根据写入数据的size来对log size进行赋值，最小的大于log_size的2的指数倍
+ * 
+ * @param record_size 
+ * @return log_size_t 
+ */
 static inline log_size_t set_log_size(size_t record_size) {
   log_size_t log_size = LOG_4K;
   record_size = (record_size - 1) >> PAGE_SHIFT;
@@ -515,6 +536,15 @@ static inline log_size_t set_log_size(size_t record_size) {
   return log_size;
 }
 
+/**
+ * @brief 处理写请求
+ * 
+ * @param dst 
+ * @param src 
+ * @param record_size 
+ * @param uma 
+ */
+//XXX
 void nvmemcpy_write(void *dst, const void *src, size_t record_size,
                            uma_t *uma) {
   log_entry_t *entry;
@@ -545,7 +575,7 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
   n = (int)record_size;
   req_addr = (unsigned long)dst;
 
-  table = get_log_table(req_addr);
+  table = get_log_table(req_addr);/* 获取Index Entry对应的Table */
 
   /* TODO: log_size must be updated atomically */
   if (table->count == 0) {
@@ -554,7 +584,10 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
   } else {
     log_size = table->log_size;
   }
-
+/* 当log_size为LOG_2M时，index为0，
+ * 对应论文中的当Log Entry为2MB时，最后21bits都是entry内的偏移
+ */
+// LEARN:利用位运算和各种宏定义来控制索引和偏移占用的比特位 具体见nvmemcpy_write函数
   index = table_index(log_size, req_addr);
 
   LIBNVMMIO_END_TIME(indexing_log_t, indexing_log_time);
@@ -569,7 +602,8 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
 
     if (entry == NULL) {
       entry = alloc_log_entry(uma, log_size);
-
+      /* CONFUSE：为什么这里不直接判断是否为NULL，在进行alloc。
+       * 是否是并发可能会导致错误？ */
       if (__sync_bool_compare_and_swap(&table->entries[index], NULL, entry)) {
         atomic_increase(&table->count);
       } else {
@@ -579,14 +613,19 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
     }
     LIBNVMMIO_END_TIME(alloc_log_t, alloc_log_time);
 
-    if (pthread_rwlock_trywrlock(entry->rwlockp) != 0)
+    if (pthread_rwlock_trywrlock(entry->rwlockp) != 0)/* 试图上锁， 基于log entry的细粒度的锁 */
       goto nvmemcpy_write_get_entry;
 
-    if (entry->epoch < uma->epoch) {
-      sync_entry(entry, uma);
+    if (entry->epoch < uma->epoch) { /* 未被提交的log entry */
+      sync_entry(entry, uma); /* checkpoints */
     }
 
     req_offset = LOG_OFFSET(req_addr, log_size);
+    /* BUGBEGIN：这一段代码貌似会经常导致大量的数据丢弃
+     * log_size是req_size的最小包容
+     * 而req_offset往往不为0，所以会经常导致数据缺失
+     * */
+    // SOLVE:后面会将多于的写到写一个entry。但是这样会跨entry。一定程度上应该会降低性能
     next_page_addr = (req_addr + LOG_SIZE(log_size)) & LOG_MASK(log_size);
 
     log_start = entry->data + req_offset;
@@ -595,42 +634,44 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
     if ((int)next_len > n)
       req_len = n;
     else
-      req_len = next_len;
+      req_len = next_len; /* CONFUSE：多余的数据直接丢弃？ */
 
     if (uma->policy == UNDO) {
+      /* 处理UNDO事务，将原数据写入log */
       nvmmio_write(log_start, dst, req_len, false);
     } else {
+      /* 处理REDO事务，直接将数据写入log*/
       nvmmio_write(log_start, src, req_len, false);
     }
-
-    if (entry->len > 0) {  // overwrite
+    /*BUGEND*/
+    if (entry->len > 0) {  // 说明发生overwrite
       log_end = log_start + req_len;
       prev_log_start = entry->data + entry->offset;
       prev_log_end = prev_log_start + entry->len;
 
       s = check_overwrite(log_start, log_end, prev_log_start, prev_log_end);
       switch (s) {
-        case 1:
+        case 1:/* log_start <= prev_log_start; log_end < prev_log_start */
           overwrite_src = dst + req_len;
           overwrite_len = prev_log_start - log_end;
-          nvmmio_write(log_end, overwrite_src, overwrite_len, false);
+          nvmmio_write(log_end, overwrite_src, overwrite_len, false);// 多写一点进来，应该是为了保证entry中数据的连续性并对应offset和len这两个成员
           entry->offset = req_offset;
           entry->len = prev_log_end - log_start;
           break;
-        case 2:
+        case 2:/* log_start <= prev_log_start; log_end >= prev_log_start; log_end < prev_log_end */
           entry->offset = req_offset;
           entry->len = prev_log_end - log_start;
           break;
-        case 3:
+        case 3:/* log_start <= prev_log_start; log_end >= prev_log_end */
           entry->offset = req_offset;
           entry->len = req_len;
           break;
-        case 4:
+        case 4:/* log_start > prev_log_start;  log_end <= prev_log_end*/
           break;
-        case 5:
+        case 5:/* log_start > prev_log_start; log_end > prev_log_end; prev_log_end >= log_start */
           entry->len = log_end - prev_log_start;
           break;
-        case 6:
+        case 6:/* log_start > prev_log_start; log_end > prev_log_end; prev_log_end < log_start */
           overwrite_len = log_start - prev_log_end;
           overwrite_src = dst - overwrite_len;
           nvmmio_write(prev_log_end, overwrite_src, overwrite_len, false);
@@ -640,10 +681,12 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
           handle_error("check overwrite");
       }
     } else {  // no overwrite
+      /* 对dst和offset赋值共持久化时获取dst。 */
       entry->offset = req_offset;
       entry->len = req_len;
       entry->dst = (void *)(req_addr & PAGE_MASK);
     }
+    /* 持久化Index Entry */
     nvmmio_flush(entry, sizeof(log_entry_t), false);
 
     s = pthread_rwlock_unlock(entry->rwlockp);
@@ -663,7 +706,7 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
   nvmmio_fence();
 
   if (uma->policy == UNDO) {
-    nvmmio_write(destination, source, record_size, true);
+    nvmmio_write(destination, source, record_size, true); //将写入的
   }
 
   s = pthread_rwlock_unlock(uma->rwlockp);
@@ -810,6 +853,14 @@ nvmemcpy_out:
   return dst;
 }
 
+/**
+ * @brief 同步file,
+ * nvmsync_sync <- nvmsync_uma <- nvmsunc
+ * @param addr 内存映射文件地址
+ * @param len 内存映射文件大小
+ * @param new_epoch 
+ */
+// XXX
 static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
   log_table_t *table;
   log_entry_t *entry;
@@ -822,7 +873,7 @@ static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
 
   table = get_log_table(address);
   log_size = table->log_size;
-  nrpages = len >> LOG_SHIFT(log_size);
+  nrpages = len >> LOG_SHIFT(log_size); // 最多跨越的table的长度
   start = table_index(log_size, address);
 
   if (NUM_ENTRIES(log_size) - start > nrpages)
@@ -878,6 +929,15 @@ static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
   release_local_list();
 }
 
+/**
+ * @brief fsync，持久化uma(Memory Mapped File)，并调用nvmsync_sync持久化文件
+ * 
+ * @param addr 内存映射文件地址
+ * @param len 内存映射文件大小
+ * @param flags 
+ * @param uma 
+ * @return int 
+ */
 int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
   unsigned long new_epoch;
   int s, ret;
@@ -902,6 +962,7 @@ int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
 
   new_epoch = uma->epoch + 1;
   uma->epoch = new_epoch;
+  /* 将uma持久化，且不通过CPU CACHE */
   nvmmio_flush(&(uma->epoch), sizeof(unsigned long), true);
 
   if (uma->write > 0) {
@@ -917,7 +978,7 @@ int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
 
   if (total > 0) {
     write_ratio = uma->write / total * 100;
-
+    /* 修改log policy */
     if (write_ratio > HYBRID_WRITE_RATIO) {
       new_policy = REDO;
     } else {
@@ -948,7 +1009,7 @@ int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
     }
   }
 
-  s = pthread_rwlock_unlock(uma->rwlockp);
+  s = pthread_rwlock_unlock(uma->rwlockp);/* 释放对uma上的锁 */
   if (__glibc_unlikely(s != 0)) {
     handle_error("pthread_rwlock_unlock");
   }
@@ -961,6 +1022,9 @@ nvmsync_out:
   return ret;
 }
 
+/**
+ * @brief SYNC
+ */
 int nvmsync(void *addr, size_t len, int flags) {
   uma_t *uma;
 

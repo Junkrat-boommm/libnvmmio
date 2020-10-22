@@ -36,6 +36,12 @@ inline int atomic_increase(int *count) {
   return new;
 }
 
+/**
+ * @brief 在索引结构（无锁Radix Tree）中索引对应的Index entry所在的Table
+ * 
+ */
+ // CONFUSE：这里跟论文不一样的是好像没有对不同Size的Log Entry区分处理
+ // SOLVE： 并不直接对size判断，而是通过对最后21位的移位来进行控制
 log_table_t *get_log_table(unsigned long address) {
   log_table_t *lud, *lmd, *table;
   unsigned long index;

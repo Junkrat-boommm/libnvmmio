@@ -28,6 +28,10 @@
 
 //#define __OPEN_NEEDS_MODE(oflag) (((oflag) & O_CREAT) != 0)
 
+/**
+ * @brief Per-File Metadata
+ * 
+ */
 typedef struct fd_mapaddr_struct {
   void *addr;
   off_t off;
@@ -42,6 +46,10 @@ typedef struct fd_mapaddr_struct {
   uma_t *fd_uma;
 } fd_addr;
 
+/**
+ * @brief 用于查找
+ * 
+ */
 static fd_addr fd_table[FD_LIMIT] = {0,};
 static int fd_indirection[FD_LIMIT] = {0};
 static int lastFd;
@@ -119,7 +127,8 @@ static inline void trunc_fit_fd(int fd) {
 	}
 }
 
-/* 拓展文件可占用空间大小
+/**
+ * @brief 拓展文件可占用空间大小
  * current_file_size <= 1GB  ->   1GB
  * current_file_size > 1GB   ->   +NthM(x)
  */
@@ -150,6 +159,9 @@ static inline size_t trunc_expand_fd(int fd, size_t current_file_size) {
   return ret;
 }
 
+/**
+ * @brief 扩展内存映射文件大小
+ */
 static inline uma_t *expand_remap_fd(int fd, size_t current_file_size) {
   int indirectedFd = fd_indirection[fd];
   size_t ret = trunc_expand_fd(fd, current_file_size);
@@ -158,15 +170,18 @@ static inline uma_t *expand_remap_fd(int fd, size_t current_file_size) {
 								 (long int)fd_table[indirectedFd].addr,
 								 fd_table[indirectedFd].written_file_size);
 
+  /* sync */
   nvmsync(fd_table[indirectedFd].addr, fd_table[indirectedFd].written_file_size,
           MS_SYNC);
 
   nvmunmap_uma(fd_table[indirectedFd].addr, fd_table[indirectedFd].mapped_size,
                get_fd_uma(fd));
-
+  
+  /* 重新建立映射 */
   fd_table[indirectedFd].addr =
       nvmmap(NULL, ret, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
+  /* 修改fd_table中对应的数据 */
   if (fd_table[indirectedFd].addr) {
     fd_table[indirectedFd].mapped_size = ret;
     fd_table[indirectedFd].fd_uma = find_uma(fd_table[indirectedFd].addr);
@@ -392,6 +407,15 @@ int nvclose(int fd) {
   return close(fd);
 }
 
+/**
+ * @brief 向内存映射文件写入数据
+ * 
+ * @param fd 文件描述符
+ * @param buf 待写入的数据
+ * @param cnt 待写入的数据大小
+ * @param dst 待写入的地址
+ * @return ssize_t 
+ */
 static inline ssize_t pwriteToMap(int fd, const void *buf, size_t cnt,
                                   void *dst) {
   // void *dst = get_fd_addr_set(fd,off);

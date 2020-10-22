@@ -30,10 +30,10 @@ static pthread_cond_t background_table_alloc_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t background_table_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int background_table_alloc = false;
 
-static freelist_t *global_tables_list = NULL;
-static freelist_t *global_entries_list = NULL;
-static freelist_t *global_data_list[NR_LOG_SIZES] = {NULL, };
-static freelist_t *global_uma_list = NULL;
+static freelist_t *global_tables_list = NULL;/* 指向table空间的指针链表 */
+static freelist_t *global_entries_list = NULL; /* 指向entries空间的指针链表 */
+static freelist_t *global_data_list[NR_LOG_SIZES] = {NULL, }; /* 指向data空间的指针链表 */
+static freelist_t *global_uma_list = NULL;/* 指向uma空间的指针链表 */
 
 static __thread freelist_t *local_tables_list = NULL;
 static __thread freelist_t *local_entries_list = NULL;
@@ -197,7 +197,7 @@ static list_node_t *create_list(void *address, size_t size, unsigned long count,
 
   for (i = 0; i < count; i++) {
     node = alloc_list_node();
-    node->ptr = address + (i * size);
+    node->ptr = address + (i * size);// 指向内存中对应的位置
     node->next = head;
     head = node;
 
@@ -325,6 +325,7 @@ static void create_global_data_list(size_t data_file_size) {
   char filename[40];
   int i;
 
+  /* 为不同size的data分配空间 */
   for (i = 0; i < NR_LOG_SIZES; i++) {
     global_data_list[i] = (freelist_t *)malloc(sizeof(freelist_t));
     if (__glibc_unlikely(global_data_list[i] == NULL)) {
@@ -511,6 +512,7 @@ static void fill_local_data_list(log_size_t log_size) {
   pthread_mutex_unlock(&global_data_list[log_size]->mutex);
 }
 
+/* 将释放的data块重新插入到链中 */
 static void put_log_global(freelist_t *local_list, freelist_t *global_list,
                            int nrnodes) {
   list_node_t *node, *tmp_node;
@@ -533,6 +535,7 @@ static void put_log_global(freelist_t *local_list, freelist_t *global_list,
   pthread_mutex_unlock(&global_list->mutex);
 }
 
+/* 将释放的entry和data重新插入到链中 */
 static void put_log_local(log_entry_t *entry, log_size_t log_size) {
   list_node_t *data_node, *entry_node;
 
@@ -703,6 +706,13 @@ log_entry_t *alloc_log_entry(uma_t *uma, log_size_t log_size) {
   return entry;
 }
 
+/**
+ * @brief 把local entry list中的entry node全部释放会global list中
+ * 
+ * @param entry 
+ * @param log_size 
+ * @param sync 
+ */
 void free_log_entry(log_entry_t *entry, log_size_t log_size, bool sync) {
   int s;
   entry->united = 0;
@@ -710,7 +720,7 @@ void free_log_entry(log_entry_t *entry, log_size_t log_size, bool sync) {
   entry->dst = NULL;
 
   if (sync) {
-    pmem_persist(entry, sizeof(log_entry_t));
+    pmem_persist(entry, sizeof(log_entry_t)); /* TODO:查一下这个函数 */
   }
 
   s = pthread_rwlock_destroy(entry->rwlockp);

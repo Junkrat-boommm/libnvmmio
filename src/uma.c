@@ -25,6 +25,10 @@ static list_t uma_list;
 static uma_t *uma_fdarray[MAX_NR_UMAS];
 
 static rbtree_t *uma_rbtree = NULL;
+/**
+ * @brief 缓存部分PerFile-Metadata。用于加速寻找
+ * 
+ */
 static __thread uma_t *uma_cache[UMACACHE_SIZE];
 
 #if 0
@@ -50,6 +54,9 @@ static inline uma_t *find_uma_cache(const void *addr) {
   return NULL;
 }
 
+/**
+ * @brief uma cache不命中之后在rbtree查找matedata
+ */
 static inline uma_t *find_uma_rbtree(const void *addr) {
   uma_t *uma;
   struct rb_node *node;
@@ -259,6 +266,9 @@ inline void increase_uma_read_cnt(uma_t *uma) {
   LIBNVMMIO_END_TIME(increase_uma_read_cnt_t, increase_uma_read_cnt_time);
 }
 
+/**
+ * @brief 当前epoch下该文件写请求次数加1
+ */
 inline void increase_uma_write_cnt(uma_t *uma) {
   int old, new;
 
