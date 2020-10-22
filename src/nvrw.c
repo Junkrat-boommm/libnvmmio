@@ -24,7 +24,7 @@
 #define IO_MAP_SIZE (1UL << 32) /* 1GB */
 #define FD_LIMIT 1024
 #define PATH_SIZE 64
-#define NthM(x) (67108864 << x)
+#define NthM(x) (67108864 << x) // 64M
 
 //#define __OPEN_NEEDS_MODE(oflag) (((oflag) & O_CREAT) != 0)
 
@@ -121,7 +121,7 @@ static inline void trunc_fit_fd(int fd) {
 
 /* 拓展文件可占用空间大小
  * current_file_size <= 1GB  ->   1GB
- * current_file_size > 1GB   ->   
+ * current_file_size > 1GB   ->   +NthM(x)
  */
 static inline size_t trunc_expand_fd(int fd, size_t current_file_size) {
   size_t ret = current_file_size;
@@ -142,7 +142,7 @@ static inline size_t trunc_expand_fd(int fd, size_t current_file_size) {
     if (posix_fallocate(indirectedFd, fd_table[indirectedFd].current_file_size,
                         add_file_size) < 0) {
       LIBNVMMIO_DEBUG("posix_fallocate error");
-    } else {
+    } else {  // 扩展成功
       fd_table[indirectedFd].increaseCount++;
       fd_table[indirectedFd].current_file_size = ret;
     }
@@ -276,19 +276,19 @@ int nvopen(const char *path, int flags, ...) {
     off_t written_size = fd_size;
     size_t mapped_size;
     void *addr = 0;
-    int openedFd = get_path_fd(path);
+    int openedFd = get_path_fd(path); // 寻找对应的一打开的fd
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
-    if (openedFd > 0) {
-      fd_table[fd].off = 0;
+    if (openedFd > 0) { // 找到对应的openedFd
+      fd_table[fd].off = 0; // 初始化offset
       fd_table[fd].dupfd = fd;
-      fd_indirection[fd] = openedFd;
+      fd_indirection[fd] = openedFd; // 指向文件第一次被打开时的fd
     } else {
       fd_indirection[fd] = fd;
       openedFd = fd;
-      mapped_size = trunc_expand_fd(fd, fd_size);
+      mapped_size = trunc_expand_fd(fd, fd_size); // 扩展文件大小
       fd_size = mapped_size;
       addr = nvmmap(NULL, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
       if (addr != MAP_FAILED)
