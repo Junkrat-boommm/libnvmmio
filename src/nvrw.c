@@ -439,6 +439,7 @@ static inline ssize_t pwriteToMap(int fd, const void *buf, size_t cnt,
       dst_uma = expand_remap_fd(fd, required_size);
       dst = get_fd_addr_cur(fd);  // required_size + fd_table[fd_indirection[fd]].addr;
     }
+    /* write 次数加1 */
     increase_uma_write_cnt(dst_uma);
 
     nvmemcpy_write(dst, buf, cnt, dst_uma);

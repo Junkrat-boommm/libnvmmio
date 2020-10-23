@@ -707,7 +707,7 @@ log_entry_t *alloc_log_entry(uma_t *uma, log_size_t log_size) {
 }
 
 /**
- * @brief 把local entry list中的entry node全部释放会global list中
+ * @brief 把local entry list中的entry node全部释放会local list中
  * 
  * @param entry 
  * @param log_size 
@@ -731,6 +731,10 @@ void free_log_entry(log_entry_t *entry, log_size_t log_size, bool sync) {
   put_log_local(entry, log_size);
 }
 
+/**
+ * @brief 将local_entries_list全部释放回global list
+ * 
+ */
 void release_local_list(void) {
   list_node_t *node;
   unsigned long nrnodes, i;

@@ -12,13 +12,13 @@ typedef struct log_entry_struct {
     };
     struct {
       unsigned long epoch : 20;
-      unsigned long offset : 21;
-      unsigned long len : 22;
-      unsigned long policy : 1;
+      unsigned long offset : 21; // 有效数据在log_entry中的偏移
+      unsigned long len : 22; // 有效数据的长度
+      unsigned long policy : 1; 
     };
   };
-  void *data;
-  void *dst;
+  void *data; // 指向log entry
+  void *dst;  // 指向写回到映射文件的地址。
   pthread_rwlock_t *rwlockp;
 } log_entry_t;
 
