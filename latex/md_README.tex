@@ -1,0 +1,28 @@
+We are updating this repository to improve the readability of our source code. We will also add some examples that use Libnvmmio to help you understand how to use Libnvmmio.\hypertarget{md_README_autotoc_md4}{}\doxysection{Libnvmmio}\label{md_README_autotoc_md4}
+We have designed and implemented {\itshape Libnvmmio} to maximize the IO performance of non-\/volatile main memory (N\+V\+MM) systems. The purpose of Libnvmmio is eliminating software overhead, providing low-\/latency, scalable file IO while ensuring data-\/atomicity. As the name indicates, Libnvmmio is linked with applications as a library, providing an efficient IO path using the {\ttfamily mmap} interface.\hypertarget{md_README_autotoc_md5}{}\doxysubsection{Requirements}\label{md_README_autotoc_md5}
+
+\begin{DoxyEnumerate}
+\item {\bfseries{N\+V\+M-\/aware filesystem.}} You can use Libnvmmio with any filesystem that provides {\ttfamily D\+A\+X-\/mmap}, such as Ext4-\/\+D\+AX, X\+F\+S-\/\+D\+AX, \href{https://github.com/linux-pmfs/pmfs}{\texttt{ P\+M\+FS}}, \href{https://github.com/NVSL/linux-nova}{\texttt{ N\+O\+VA}}, \href{https://github.com/utsaslab/SplitFS}{\texttt{ Split\+FS}} and so on. The {\ttfamily D\+A\+X-\/mmap} allows Libnvmmio to map the pages of an N\+V\+M\+M-\/backed file into its address space and then access it via {\ttfamily load} and {\ttfamily store} instructions. Libnvmmio intercepts and replaces {\ttfamily read()}/{\ttfamily write()} system calls with {\ttfamily load}/{\ttfamily store} instructions.
+\item {\bfseries{P\+M\+DK.}} Libnvmmio uses \href{https://pmem.io/pmdk/}{\texttt{ P\+M\+DK}} library to write data to N\+VM. When writing data through non-\/temporal stores, it uses {\ttfamily pmem\+\_\+memcpy\+\_\+nodrain()} and {\ttfamily pmem\+\_\+drain()}. It also uses {\ttfamily pmem\+\_\+flush()} to make metadata updates permanent. P\+M\+DK is a well-\/proven library. It provides optimizations for parallelisms such as S\+S\+E2 and M\+MX. It will also support A\+RM processors as well as Intel processors.
+\end{DoxyEnumerate}\hypertarget{md_README_autotoc_md6}{}\doxysubsection{Getting started with Libnvmmio}\label{md_README_autotoc_md6}
+
+\begin{DoxyEnumerate}
+\item {\bfseries{Build Libnvmmio.}} 
+\begin{DoxyCode}{0}
+\DoxyCodeLine{\$ git clone https://github.com/review-\/anonymous/libnvmmio.git}
+\DoxyCodeLine{\$ cd libnvmmio/src}
+\DoxyCodeLine{\$ make}
+\end{DoxyCode}
+
+\item {\bfseries{Write and compile your application.}} There are simple examples in the \mbox{[}examples directory\mbox{]}(examples). Those examples will help you understand how to use Libnvmmio. Note the following\+:
+\begin{DoxyItemize}
+\item Include {\ttfamily \mbox{\hyperlink{libnvmmio_8h_source}{libnvmmio.\+h}}} header file in the source file with the file IO code.
+\item Use the {\ttfamily O\+\_\+\+A\+T\+O\+M\+IC} flag when opening a file for which you want to guarantee atomic-\/durability.
+\end{DoxyItemize}
+\item {\bfseries{Set {\ttfamily P\+M\+E\+M\+\_\+\+P\+A\+TH} variable.}} Libnvmmio has to know where the persistent area is for logging. So you have to tell Libnvmmio which path an nvm-\/aware filesystem is mounted on. 
+\begin{DoxyCode}{0}
+\DoxyCodeLine{\$ export PMEM\_PATH=/mnt/pmem}
+\end{DoxyCode}
+
+\item {\bfseries{Run your application.}} 
+\end{DoxyEnumerate}

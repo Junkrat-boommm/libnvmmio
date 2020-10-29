@@ -39,8 +39,8 @@ typedef struct fd_mapaddr_struct {
   size_t mapped_size;
   size_t written_file_size;
   size_t current_file_size;
-  int dup;
-  int dupfd;
+  int dup; // 记录复制的文件描述符次数
+  int dupfd;  // 指示当前的fd是否是dup来的。如果fd_table[fd].dupfd != fd.则说明通过调用nvdup产生的fd。
   int open;
   int increaseCount;
   uma_t *fd_uma;
@@ -114,6 +114,10 @@ static inline int get_path_fd(const char *pathname) {
   return -1;
 }
 
+/**
+ * @brief 修改对应的文件大小 
+ * 使file_size = written_file_size
+ */
 static inline void trunc_fit_fd(int fd) {
 	size_t written_file_size = fd_table[fd_indirection[fd]].written_file_size;
 	size_t current_file_size = fd_table[fd_indirection[fd]].current_file_size;
@@ -161,6 +165,8 @@ static inline size_t trunc_expand_fd(int fd, size_t current_file_size) {
 
 /**
  * @brief 扩展内存映射文件大小
+ * 在unmap之前需要显示调用nvmsync
+ * 然后重新建立映射
  */
 static inline uma_t *expand_remap_fd(int fd, size_t current_file_size) {
   int indirectedFd = fd_indirection[fd];
@@ -191,6 +197,9 @@ static inline uma_t *expand_remap_fd(int fd, size_t current_file_size) {
   return fd_table[indirectedFd].fd_uma;
 }
 
+/**
+ * @brief 创建一个文件并且建立映射
+ */
 int nvcreat(const char *filename, mode_t mode) {
   /* TODO: should change this to open */
   int fd = creat(filename, mode);
@@ -203,6 +212,9 @@ int nvcreat(const char *filename, mode_t mode) {
   return fd;
 }
 
+/**
+ * @brief 处理文件打开时的flags
+ */
 static inline void sanitize_flags(int *flags) {
   if (!(*flags & O_RDWR)) {
     if (!(*flags & O_WRONLY)) {
@@ -222,6 +234,14 @@ static inline int fd_validity(int fd) {
   return fcntl(fd, F_GETFL) != -1 || errno != EBADF;
 }
 
+/**
+ * @brief 打开一个文件，并且建立映射
+ * 可以通过flags来设置是否选择普通打开
+ * @param path 路径
+ * @param flags 
+ * @param ... 
+ * @return int 
+ */
 int nvopen(const char *path, int flags, ...) {
   struct stat statbuf;
   off_t fd_size = 0;
@@ -237,11 +257,11 @@ int nvopen(const char *path, int flags, ...) {
 		flags &= ~O_ATOMIC;
 	}
 
-  if (flags & O_PATH) {
+  if (flags & O_PATH) { // 解析路径名但不打开文件
 		goto original_open;
   }
 
-  if (stat(path, &statbuf) != 0) {
+  if (stat(path, &statbuf) != 0) { // 获取文件元数据
     LIBNVMMIO_DEBUG("stat failed to Path:%s errno:%d", path, errno);
   } else {
     if (S_ISDIR(statbuf.st_mode) || strncmp(path, "/dev", 4) == 0) {
@@ -255,7 +275,7 @@ int nvopen(const char *path, int flags, ...) {
       strncmp(path, "/proc", 5) == 0 ||
       (path[strlen(path) - 1] == '.' && path[strlen(path) - 2] == '/')) {
     isdir = true;
-  } else {
+  } else { //如果是文件，处理flags
     sanitize_flags(&flags);
   }
 
@@ -328,6 +348,10 @@ original_open:
 	return open(path, flags, mode);
 }
 
+/**
+ * @brief 复制oldfd所指的文件描述符
+ * 
+ */
 int nvdup(int oldfd) {
   int newfd = dup(oldfd);
 
@@ -338,6 +362,13 @@ int nvdup(int oldfd) {
   return newfd;
 }
 
+/**
+ * @brief 
+ * 
+ * @param vargp 
+ * @return void* 
+ */
+//TODO:learn
 void *unmap_thread(void *vargp) {
   int fd = *((int *)vargp);
 
@@ -347,15 +378,18 @@ void *unmap_thread(void *vargp) {
 	return NULL;
 }
 
+/**
+ * @brief 
+ */
 int nvclose(int fd) {
   if (get_fd_addr_cur(fd) == NULL) {
     fd_indirection[fd] = 0;
     return close(fd);
   }
 
-  if (fd_table[fd].dupfd != fd) {
+  if (fd_table[fd].dupfd != fd) { // 说明是dup而来
     fd_table[fd_table[fd].dupfd].dup--;
-    if (fd_indirection[fd_table[fd].dupfd] == 0) {
+    if (fd_indirection[fd_table[fd].dupfd] == 0) {// dup的fd已经被关闭
       if (fd_table[fd_table[fd].dupfd].dup == 0 &&
           fd_indirection[fd_indirection[fd]] == 0) {
         if (fd_table[fd_indirection[fd]].open <= 2) {
@@ -368,23 +402,23 @@ int nvclose(int fd) {
     }
     fd_table[fd].dupfd = 0;
   } else if (fd_table[fd_indirection[fd]].open > 1) {
-    if (fd_table[fd].dup == 0) {
+    if (fd_table[fd].dup == 0) {// 该fd未被复制
       fd_table[fd_indirection[fd]].open--;
       fd_table[fd].off = 0;
-      fd_table[fd].dupfd = 0;
+      fd_table[fd].dupfd = 0; // 标志该fd无效?
     }
-  } else if (fd_table[fd].dup == 0) {
+  } else if (fd_table[fd].dup == 0) {// 该fd未被复制
     void *addr;
     //size_t mapped_size;
-  removeOriginalFd:
+  removeOriginalFd:// 删除原始的fd
     addr = fd_table[fd_indirection[fd]].addr;
     //mapped_size = fd_table[fd_indirection[fd]].mapped_size;
     trunc_fit_fd(fd);
-    close_sync_thread(fd_table[fd_indirection[fd]].fd_uma);
+    close_sync_thread(fd_table[fd_indirection[fd]].fd_uma);// 关闭后台同步线程
 
     nvmsync_uma(addr, fd_table[fd_indirection[fd]].written_file_size, MS_SYNC,
                 get_fd_uma(fd));
-
+    // 取消文件映射
     nvmunmap_uma(fd_table[fd_indirection[fd]].addr,
                  fd_table[fd_indirection[fd]].mapped_size, get_fd_uma(fd));
 
@@ -449,6 +483,15 @@ static inline ssize_t pwriteToMap(int fd, const void *buf, size_t cnt,
   return cnt;
 }
 
+/**
+ * @brief 读取src处的cnt字节的数据到buf中
+ * 
+ * @param fd 已打开文件的描述符
+ * @param buf 待读取数据写入的缓冲区
+ * @param cnt 字节数
+ * @param src 待读取数据的地址
+ * @return ssize_t 
+ */
 static inline ssize_t preadFromMap(int fd, void *buf, size_t cnt, void *src) {
   uma_t *src_uma = get_fd_uma(fd);
 
@@ -461,15 +504,23 @@ static inline ssize_t preadFromMap(int fd, void *buf, size_t cnt, void *src) {
   if (src_uma) {
     increase_uma_read_cnt(src_uma);
     if (src_uma->policy == UNDO) {
-      nvmmio_memcpy(buf, src, cnt);
+      nvmmio_memcpy(buf, src, cnt); // undo策略由于是就地写，可以直接读取
       return cnt;
     } else {
-      nvmemcpy_read_redo(buf, src, cnt);
+      nvmemcpy_read_redo(buf, src, cnt);// 从redo log中读取
     }
   }
   return cnt;
 }
 
+/**
+ * @brief 从已打开的文件中读取cnt字节的数据到buffer中，通过调用preadFromMap
+ * 
+ * @param fd 打开的文件描述符
+ * @param buf  读取数据所存放的缓冲区
+ * @param cnt 读取数据的size
+ * @return ssize_t 
+ */
 ssize_t nvread(int fd, void *buf, size_t cnt) {
   void *src = get_fd_addr_cur(fd);
   if (src == NULL) {
@@ -477,10 +528,11 @@ ssize_t nvread(int fd, void *buf, size_t cnt) {
     return read(fd, buf, cnt);
   }
   ssize_t ret = preadFromMap(fd, buf, cnt, src);
-  if (fd_table[fd].dupfd == fd) {
+  if (fd_table[fd].dupfd == fd) { // 不是被复制的fd
     fd_table[fd].off += cnt;
   } else {
-    fd_table[fd_indirection[fd]].off += cnt;
+    // TODO: 编码试试dup和reopen的差别
+    fd_table[fd_indirection[fd]].off += cnt;// CONFUSE：为什么不是fd_table[fd_table[fd].dupfd].off += cnt?
   }
 
   return ret;
@@ -516,7 +568,7 @@ ssize_t nvwrite(int fd, const void *buf, size_t cnt) {
 off_t nvlseek(int fd, off_t offset, int whence) {
   off_t off;
   switch (whence) {
-    case SEEK_SET:
+    case SEEK_SET:// 参数offset 即为新的读写位置
       // validate offset range
       if (fd_table[fd].dupfd == fd)
         fd_table[fd].off = offset;
@@ -525,7 +577,7 @@ off_t nvlseek(int fd, off_t offset, int whence) {
 
       return offset;
 
-    case SEEK_CUR:
+    case SEEK_CUR:// SEEK_CUR 以目前的读写位置往后增加offset 个位移量
       if (fd_indirection[fd] == 0) return -1;
       if (fd_table[fd].dupfd == fd) {
         fd_table[fd].off += offset;
@@ -536,7 +588,7 @@ off_t nvlseek(int fd, off_t offset, int whence) {
       }
       return off;
 
-    case SEEK_END:
+    case SEEK_END:  // 将读写位置指向文件尾后再增加offset 个位移量.
       if (fd_table[fd].dupfd == fd) {
         fd_table[fd].off = fd_table[fd].written_file_size + offset;
         off = fd_table[fd].off;
@@ -553,6 +605,9 @@ off_t nvlseek(int fd, off_t offset, int whence) {
   }
 }
 
+/**
+ * @brief 修改文件大小
+ */
 int nvftruncate(int fd, off_t length) {
   int ret = ftruncate(fd, length);
   if (ret == 0) {
@@ -564,6 +619,9 @@ int nvftruncate(int fd, off_t length) {
   return ret;
 }
 
+/**
+ * @brief 同步，对于ummaped文件，调用fsync，否则调用nvmsync_uma
+ */
 int nvfsync(int fd) {
   int indirectedFd = fd_indirection[fd];
   if (get_fd_addr_cur(fd) == NULL) {
@@ -578,6 +636,9 @@ int nvfsync(int fd) {
 }
 
 // pread does not change offset
+/**
+ * @brief  read并指定offset
+ */
 ssize_t nvpread(int fd, void *buf, size_t cnt, off_t offset) {
   if (get_fd_addr_cur(fd) == NULL) {
     //	printf("[%s] Called write with unmapped fd %d\\n", __func__, fd);
@@ -592,6 +653,9 @@ ssize_t nvpread64(int fd, void *buf, size_t cnt, off_t offset) {
   return nvpread(fd, buf, cnt, offset);
 }
 
+/**
+ * @brief write但不更新offset
+ */
 ssize_t nvpwrite(int fd, const void *buf, size_t cnt, off_t offset) {
   if (get_fd_addr_cur(fd) == NULL) {
     return pwrite(fd, buf, cnt, offset);
@@ -610,6 +674,9 @@ ssize_t nvpwrite64(int fd, const void *buf, size_t cnt, off_t offset) {
 }
 
 // TODO Implement this as multithreaded from thread pool made in init()
+/**
+ * @brief 读取数据到多个buffer，并不是并行
+ */
 ssize_t nvpreadv(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
   // TODO Stopped Here
   int i;
@@ -627,6 +694,9 @@ ssize_t nvpreadv(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
   return ret;
 }
 
+/**
+ * @brief 写入多个buffer的数据
+ */
 ssize_t nvpwritev(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
   if (get_fd_addr_cur(fd) == NULL) {
     return pwritev(fd, iov, iovcnt, offset);
@@ -653,6 +723,9 @@ ssize_t nvpwritev(int fd, const struct iovec *iov, int iovcnt, off_t offset) {
   return ret;
 }
 
+/**
+ * @brief 读取数据到多个buffer，并更新offset
+ */
 ssize_t nvreadv(int fd, const struct iovec *iov, int iovcnt) {
   int i;
   ssize_t ret = 0;
@@ -675,6 +748,9 @@ ssize_t nvreadv(int fd, const struct iovec *iov, int iovcnt) {
   return ret;
 }
 
+/**
+ * @brief 写入多个buffer中的数据，并更新offset
+ */
 ssize_t nvwritev(int fd, const struct iovec *iov, int iovcnt) {
   int i;
   ssize_t ret = 0, file_size = fd_table[fd_indirection[fd]].current_file_size,
@@ -713,6 +789,9 @@ ssize_t nvwritev(int fd, const struct iovec *iov, int iovcnt) {
   return ret;
 }
 
+/**
+ * @brief  fdatasync函数类似于fsync，但它只影响文件的数据部分
+ */
 int nvfdatasync(int fd) {
   if (get_fd_addr_cur(fd) == NULL) {
     // printf("\n\n%s called ", __func__);
@@ -726,6 +805,9 @@ int nvfdatasync(int fd) {
   return nvfsync(fd);
 }
 
+/**
+ * @brief  
+ */
 int nvfcntl(int fd, int cmd, ...) {
   va_list arg;
   struct flock *f1;
@@ -751,6 +833,11 @@ int nvfcntl(int fd, int cmd, ...) {
       return 0;
   }
 }
+
+
+/**
+ * @brief 获取文件状态
+ */
 int nvstat(const char *pathname, struct stat *statbuf) {
   int ret = stat(pathname, statbuf);
   int fd = get_path_fd(pathname);
@@ -785,12 +872,18 @@ int nvfstat(int fd, struct stat *statbuf) {
   return ret;
 }
 
+/**
+ * @brief sync指定位置的指定大小的数据
+ */
 int nvsync_file_range(int fd, off64_t offset, off64_t nbytes) {
   trunc_fit_fd(fd);
   LIBNVMMIO_DEBUG("addr:%ld, len:%ld", (long int)fd_table[fd].addr, fd_table[fd].written_file_size);
   return nvmsync(fd_table[fd_indirection[fd]].addr + offset, nbytes, MS_ASYNC);
 }
 
+/**
+ * @brief 从fd中offset处开始，保证文件长度不小于len。
+ */
 int nvfallocate(int fd, int mode, off_t offset, off_t len) {
   // TODO: zero out unwritten area to end of file
   off_t required_len = offset + len;

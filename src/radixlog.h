@@ -18,7 +18,7 @@ typedef struct log_entry_struct {
     };
   };
   void *data; // 指向log entry
-  void *dst;  // 指向写回到映射文件的地址。
+  void *dst;  // 与offset一起指向写回到映射文件的地址
   pthread_rwlock_t *rwlockp;
 } log_entry_t;
 

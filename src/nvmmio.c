@@ -48,6 +48,10 @@ static void *base_mmap_addr = NULL;
 static void *min_addr = (void *)ULONG_MAX;
 static void *max_addr = (void *)0UL;
 
+/**
+ * @brief 调用pmem_drain(),确保flush完成
+ * 
+ */
 static inline void nvmmio_fence(void) {
   LIBNVMMIO_INIT_TIME(nvmmio_fence_time);
   LIBNVMMIO_START_TIME(nvmmio_fence_t, nvmmio_fence_time);
@@ -57,12 +61,15 @@ static inline void nvmmio_fence(void) {
   LIBNVMMIO_END_TIME(nvmmio_fence_t, nvmmio_fence_time);
 }
 
+/**
+ * @brief 将src处的数据写入到PM中，dest是对应的映射地址
+ */
 static inline void nvmmio_write(void *dest, const void *src, size_t n,
                                 bool fence) {
   LIBNVMMIO_INIT_TIME(nvmmio_write_time);
   LIBNVMMIO_START_TIME(nvmmio_write_t, nvmmio_write_time);
 
-  pmem_memcpy_nodrain(dest, src, n);/* 从内存向PM拷贝数据，但不flush */
+  pmem_memcpy_nodrain(dest, src, n);/* 从内存向PM拷贝数据，不经过cache，所以不需要flush，只需要fense */
 
   if (fence) {
     nvmmio_fence();
@@ -71,6 +78,9 @@ static inline void nvmmio_write(void *dest, const void *src, size_t n,
   LIBNVMMIO_END_TIME(nvmmio_write_t, nvmmio_write_time);
 }
 
+/**
+ * @brief 调用pmem_flush
+ */
 static inline void nvmmio_flush(const void *addr, size_t n, bool flush) {
   LIBNVMMIO_INIT_TIME(nvmmio_flush_time);
   LIBNVMMIO_START_TIME(nvmmio_flush_t, nvmmio_flush_time);
@@ -83,7 +93,9 @@ static inline void nvmmio_flush(const void *addr, size_t n, bool flush) {
 
   LIBNVMMIO_END_TIME(nvmmio_flush_t, nvmmio_flush_time);
 }
-
+/**
+ * @brief 调用memcpy
+ */
 inline void nvmmio_memcpy(void *dst, const void *src, size_t n) {
   LIBNVMMIO_INIT_TIME(nvmmio_memcpy_time);
   LIBNVMMIO_START_TIME(nvmmio_memcpy_t, nvmmio_memcpy_time);
@@ -93,6 +105,9 @@ inline void nvmmio_memcpy(void *dst, const void *src, size_t n) {
   LIBNVMMIO_END_TIME(nvmmio_memcpy_t, nvmmio_memcpy_time);
 }
 
+/**
+ * @brief 原子减一
+ */
 static inline void atomic_decrease(int *count) {
   int old, new;
 
@@ -102,7 +117,10 @@ static inline void atomic_decrease(int *count) {
   } while (!__sync_bool_compare_and_swap(count, old, new));
 }
 
-/* CONFUSE:这个函数的功能 */
+/**
+ * @brief 初始化基址
+ * 
+ */
 static inline void init_base_address(void) {
   void *addr;
 
@@ -120,6 +138,9 @@ static inline void init_base_address(void) {
   }
 }
 
+/**
+ * @brief 用后台线程调用，进行sync
+ */
 static void sync_uma(uma_t *uma) {
   unsigned long address, current_epoch, end, i;
   unsigned long table_size = 1UL << 21;
@@ -195,6 +216,12 @@ static void cleanup_handler(void) {
   return;
 }
 
+/**
+ * @brief 初始化
+ * 
+ * 设置pmem_path，创建table、entry的需要的内存空间和文件、radixlog、以及用于存放uma的rbtree
+ * 
+ */
 void init_libnvmmio(void) {
   if (__sync_bool_compare_and_swap(&initialized, false, true)) {
 		LIBNVMMIO_INIT_TIMER();
@@ -211,7 +238,7 @@ void init_libnvmmio(void) {
 
 /**
  * @brief Get the base mmap addr object
- * 按页分配文件映射空间(1 << 21) 
+ * 按页分配文件映射起始地址(1 << 21) 
  */
 static inline void *get_base_mmap_addr(void *addr, size_t n) {
   void *old, *new;
@@ -235,6 +262,9 @@ static inline bool filter_addr(const void *address) {
   return (min_addr <= address) && (address < max_addr);
 }
 
+/**
+ * @brief 关闭后台同步线程
+ */
 void close_sync_thread(uma_t *uma) {
   int s;
   s = pthread_cancel(uma->sync_thread);
@@ -243,6 +273,9 @@ void close_sync_thread(uma_t *uma) {
   }
 }
 
+/**
+ * @brief 后台同步线程执行函数
+ */
 static void *sync_thread_func(void *parm) {
   uma_t *uma;
   uma = (uma_t *)parm;
@@ -265,6 +298,11 @@ static void create_sync_thread(uma_t *uma) {
   }
 }
 
+/**
+ * @brief 建立文件映射，并且记录uma
+ * 
+ * @param offset 一般设置为0，代表为文件起始处开始映射
+ */
 void *nvmmap(void *addr, size_t len, int prot, int flags, int fd,
              off_t offset) {
   void *mmap_addr;
@@ -327,6 +365,9 @@ void *nvmmap(void *addr, size_t len, int prot, int flags, int fd,
   return mmap_addr;
 }
 
+/**
+ * @brief 取消映射，调用munmap
+ */
 int nvmunmap_uma(void *addr, size_t n, uma_t *uma) {
   if (__glibc_unlikely(uma == NULL)) {
     handle_error("find_uma() failed");
@@ -347,13 +388,13 @@ int nvmunmap(void *addr, size_t n) {
 }
 
 /**
- * @brief 对未被提交的log entry进行写入
+ * @brief 对提交的log entry进行写入
  * 
  * @param entry 
  * @param uma 
  */
 // CONFUSE：论文中写的是后台同步
-// XXX
+// SOLVE：在打开文件的时候，会创建一个定时同步的后台线程。
 static void sync_entry(log_entry_t *entry, uma_t *uma) {
   void *dst, *src;
 
@@ -421,6 +462,13 @@ static inline int check_overwrite(void *req_start, void *req_end,
   }
 }
 
+/**
+ * @brief 从redo log读取数据
+ * 
+ * @param dest 数据待写入的缓冲区
+ * @param src 待读取数据的映射地址
+ * @param record_size 数据size
+ */
 void nvmemcpy_read_redo(void *dest, const void *src, size_t record_size) {
   log_table_t *table;
   log_entry_t *entry;
@@ -446,7 +494,8 @@ void nvmemcpy_read_redo(void *dest, const void *src, size_t record_size) {
       log_size = table->log_size;
       index = table_index(log_size, req_addr);
 
-      next_page_addr = (req_addr + LOG_SIZE(log_size)) & LOG_MASK(log_size);
+      next_page_addr = (req_addr + LOG_SIZE(log_size)) & LOG_MASK(log_size);// CONFUSE：为什么是按log_size对齐
+      // SOLVE:因为写的时候是这样写入的
       next_len = next_page_addr - req_addr;
 
     nvmemcpy_read_get_entry:
@@ -472,13 +521,15 @@ void nvmemcpy_read_redo(void *dest, const void *src, size_t record_size) {
         req_end = req_start + req_len;
 
         s = check_overwrite(req_start, req_end, log_start, log_end);
+        // 获取redo log中记录的log起始地址并不包含需要读取的全部数据
+        // 所以可能出现读取部分的情况，甚至无法完全读取
         switch (s) {
           case 1:
             break;
           case 2:
             overwrite_dest = dest + (log_start - req_start);
             overwrite_len = req_end - log_start;
-            nvmmio_memcpy(overwrite_dest, log_start, overwrite_len);
+            nvmmio_memcpy(overwrite_dest, log_start, overwrite_len);// 只读取了部分
             break;
           case 3:
             overwrite_dest = dest + (log_start - req_start);
@@ -508,6 +559,7 @@ void nvmemcpy_read_redo(void *dest, const void *src, size_t record_size) {
       LIBNVMMIO_END_TIME(check_log_t, check_log_time);
     }
     /* No Table */
+    // 即当前addr没有进行写入操作，所以也就没有对应的table。
     else {
       next_table_addr = (req_addr + TABLE_SIZE) & TABLE_MASK;
       next_table_len = next_table_addr - req_addr;
@@ -629,12 +681,13 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
     next_page_addr = (req_addr + LOG_SIZE(log_size)) & LOG_MASK(log_size);
 
     log_start = entry->data + req_offset;
-    next_len = next_page_addr - req_addr;
+    next_len = next_page_addr - req_addr;// 这个值是一定能够被long entry所包容的
+
 
     if ((int)next_len > n)
       req_len = n;
     else
-      req_len = next_len; /* CONFUSE：多余的数据直接丢弃？ */
+      req_len = next_len; 
 
     if (uma->policy == UNDO) {
       /* 处理UNDO事务，将原数据写入log */
@@ -681,7 +734,7 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
           handle_error("check overwrite");
       }
     } else {  // no overwrite
-      /* 对dst和offset赋值共持久化时获取dst。 */
+      /* 对dst和offset赋值供持久化时获取dst。 */
       entry->offset = req_offset;
       entry->len = req_len;
       entry->dst = (void *)(req_addr & PAGE_MASK);
@@ -706,7 +759,7 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
   nvmmio_fence();
 
   if (uma->policy == UNDO) {
-    nvmmio_write(destination, source, record_size, true); //将写入的
+    nvmmio_write(destination, source, record_size, true); //就地更新
   }
 
   s = pthread_rwlock_unlock(uma->rwlockp);
@@ -716,6 +769,15 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size,
   LIBNVMMIO_END_TIME(nvmemcpy_write_t, nvmemcpy_write_time);
 }
 
+/**
+ * @brief 
+ * 
+ * @param dst 
+ * @param src 
+ * @param n 
+ * @param dst_uma 
+ * @param src_uma 
+ */
 static inline void nvmemcpy_f2f_write(void *dst, const void *src, size_t n,
                                       uma_t *dst_uma, uma_t *src_uma) {
   void *buf;
@@ -808,6 +870,14 @@ static void get_string_from_redo(char **dst, const char *src) {
   } while (next);
 }
 
+/**
+ * @brief 
+ * 
+ * @param dst 
+ * @param src 
+ * @param n 
+ * @return void* 
+ */
 void *nvmemcpy(void *dst, const void *src, size_t n) {
   uma_t *dst_uma, *src_uma;
 
@@ -855,7 +925,7 @@ nvmemcpy_out:
 
 /**
  * @brief 同步file,
- * nvmsync_sync <- nvmsync_uma <- nvmsunc
+ * nvmsync_sync <- nvmsync_uma <- nvmsync
  * @param addr 内存映射文件地址
  * @param len 内存映射文件大小
  * @param new_epoch 
@@ -988,7 +1058,7 @@ int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
     uma->read = 0;
     uma->write = 0;
 
-    if (uma->policy != new_policy) {
+    if (uma->policy != new_policy) { // 如果log 策略不变 则直接返回。
       flags &= ~MS_ASYNC;
       flags |= MS_SYNC;
       uma->policy = new_policy;

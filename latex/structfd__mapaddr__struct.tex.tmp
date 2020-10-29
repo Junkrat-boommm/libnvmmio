@@ -1,0 +1,57 @@
+\hypertarget{structfd__mapaddr__struct}{}\doxysection{fd\+\_\+mapaddr\+\_\+struct Struct Reference}
+\label{structfd__mapaddr__struct}\index{fd\_mapaddr\_struct@{fd\_mapaddr\_struct}}
+
+
+Per-\/\+File Metadata.  
+
+
+
+
+Collaboration diagram for fd\+\_\+mapaddr\+\_\+struct\+:
+% FIG 0
+\doxysubsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a1a5139632836ceb3abd390aaa39a36ed}\label{structfd__mapaddr__struct_a1a5139632836ceb3abd390aaa39a36ed}} 
+void $\ast$ {\bfseries addr}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_abdcdbfad43447a08f6c0d9aa172632f2}\label{structfd__mapaddr__struct_abdcdbfad43447a08f6c0d9aa172632f2}} 
+off\+\_\+t {\bfseries off}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a5ae89cd1608e6a08715f1dff4f2e0842}\label{structfd__mapaddr__struct_a5ae89cd1608e6a08715f1dff4f2e0842}} 
+char {\bfseries pathname} \mbox{[}P\+A\+T\+H\+\_\+\+S\+I\+ZE\mbox{]}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a8f8c197050529ab4c807d2c3e39235e4}\label{structfd__mapaddr__struct_a8f8c197050529ab4c807d2c3e39235e4}} 
+size\+\_\+t {\bfseries mapped\+\_\+size}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_af4c48c5dc77b3e435eee564aec399287}\label{structfd__mapaddr__struct_af4c48c5dc77b3e435eee564aec399287}} 
+size\+\_\+t {\bfseries written\+\_\+file\+\_\+size}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_aad7a4fc9dea9abcff3c445a5fe257baf}\label{structfd__mapaddr__struct_aad7a4fc9dea9abcff3c445a5fe257baf}} 
+size\+\_\+t {\bfseries current\+\_\+file\+\_\+size}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_aea26622e3d273b01c2237ee54a349a5a}\label{structfd__mapaddr__struct_aea26622e3d273b01c2237ee54a349a5a}} 
+int {\bfseries dup}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_ac947dad5ee89887b20b55450e5240317}\label{structfd__mapaddr__struct_ac947dad5ee89887b20b55450e5240317}} 
+int {\bfseries dupfd}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a6f4b2433776e60fedde5e62330d767c4}\label{structfd__mapaddr__struct_a6f4b2433776e60fedde5e62330d767c4}} 
+int {\bfseries open}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a71b28cca629e0097701d6708d44df022}\label{structfd__mapaddr__struct_a71b28cca629e0097701d6708d44df022}} 
+int {\bfseries increase\+Count}
+\item 
+\mbox{\Hypertarget{structfd__mapaddr__struct_a54be05499998b447c5ea4e1bb6936b60}\label{structfd__mapaddr__struct_a54be05499998b447c5ea4e1bb6936b60}} 
+\mbox{\hyperlink{structmmap__area__struct}{uma\+\_\+t}} $\ast$ {\bfseries fd\+\_\+uma}
+\end{DoxyCompactItemize}
+
+
+\doxysubsection{Detailed Description}
+Per-\/\+File Metadata. 
+
+
+
+The documentation for this struct was generated from the following file\+:\begin{DoxyCompactItemize}
+\item 
+src/nvrw.\+c\end{DoxyCompactItemize}

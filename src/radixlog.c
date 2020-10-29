@@ -142,7 +142,8 @@ log_table_t *get_next_table(log_table_t *table, unsigned long *nrpages) {
   return ret;
 }
 
-/*
+/**
+ * @brief 根据映射地址查找对应的log table
  * Find and return the table using the virtual address.
  * If there is no table, NULL is returned.
  */
