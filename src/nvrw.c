@@ -33,7 +33,7 @@
  * 
  */
 typedef struct fd_mapaddr_struct {
-  void *addr;
+  void *addr; // 记录映射起始地址
   off_t off;
   char pathname[PATH_SIZE];
   size_t mapped_size;
