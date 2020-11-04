@@ -122,4 +122,47 @@ Libnvmmio为了面对不同的读写密集情况，对不同的文件采用log p
 
 
 # 代码分析
-## 相关结构体定义
+## 数据结构
+### 相关结构体定义
+**log_entry_struct**：索引条目结构（index entry），被持久化到PM上，对应文件`$pmem_path/.libnvmmio-$libnvmmio_pid/entries.log"`
+```c
+typedef struct log_entry_struct {
+  union {
+    struct {
+      unsigned long united;
+    };
+    struct {
+      unsigned long epoch : 20;	// 版本号
+      unsigned long offset : 21; // 有效数据在log_entry中的偏移
+      unsigned long len : 22; // 有效数据的长度
+      unsigned long policy : 1; 
+    };
+  };
+  void *data; // 指向log entry
+  void *dst;  // 与offset一起指向写回到映射文件的地址
+  pthread_rwlock_t *rwlockp;
+} log_entry_t;
+```
+
+**uma_t**：Per-File Metadata，被持久化到PM上，对应文件`$pmem_path/.libnvmmio-$libnvmmio_pid/uma.log`
+```c
+typedef struct mmap_area_struct {
+  unsigned long epoch;  // 全局版本号
+  unsigned long policy; // 日志策略
+  void *start;  // mmap file起始地址
+  void *end;  // mmap file终止地址
+  unsigned long ino; // inode
+  off_t offset; // 一般为0，代表为文件起始处开始映射
+  unsigned long read; // 处理读请求的数据
+  unsigned long write;
+  struct thread_info_struct *tinfo; // 未使用
+  pthread_rwlock_t *rwlockp;
+  struct rb_node rb;  // 在rbtree中的节点
+  struct list_head list;// 同步线程链表中的元素(未使用)
+  int id;
+  pthread_t sync_thread; // 用于同步的后台线程
+} uma_t;
+```
+
+
+fd_mapaddr_struct

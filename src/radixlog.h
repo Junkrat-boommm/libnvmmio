@@ -11,7 +11,7 @@ typedef struct log_entry_struct {
       unsigned long united;
     };
     struct {
-      unsigned long epoch : 20;
+      unsigned long epoch : 20; // 版本号
       unsigned long offset : 21; // 有效数据在log_entry中的偏移
       unsigned long len : 22; // 有效数据的长度
       unsigned long policy : 1; 

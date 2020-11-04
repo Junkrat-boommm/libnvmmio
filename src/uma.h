@@ -28,20 +28,20 @@ typedef struct sync_thread_struct {
 } sync_thread_t;
 
 typedef struct mmap_area_struct {
-  unsigned long epoch;
-  unsigned long policy;
-  void *start;
-  void *end;
-  unsigned long ino;
-  off_t offset;
-  unsigned long read;
+  unsigned long epoch;  // 全局版本号
+  unsigned long policy; // 日志策略
+  void *start;  // mmap file起始地址
+  void *end;  // mmap file终止地址
+  unsigned long ino; // inode
+  off_t offset; // 一般为0，代表为文件起始处开始映射
+  unsigned long read; // 处理读请求的数据
   unsigned long write;
-  struct thread_info_struct *tinfo;
+  struct thread_info_struct *tinfo; // 未使用
   pthread_rwlock_t *rwlockp;
-  struct rb_node rb;
-  struct list_head list;
+  struct rb_node rb;  // 在rbtree中的节点
+  struct list_head list;// 同步线程链表中的元素(未使用)
   int id;
-  pthread_t sync_thread;
+  pthread_t sync_thread; // 用于同步的后台线程
 } uma_t;
 
 typedef struct list_struct {
