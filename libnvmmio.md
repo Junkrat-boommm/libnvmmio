@@ -91,7 +91,7 @@ Libnvmmio包括两种类型的epoch：
 > 
 > epoch = global epoch ------> uncommitted
 
-## Per-File Metadata
+## 4.5. Per-File Metadata
 Libnvmmio在PM中维护了两种元数据:
 * index entry(metadata for log entry)
 * uma(metadata for Per-File)
@@ -111,7 +111,7 @@ radix_root：指向全局的radix root
 
 
 
-## 4.5. Hybrid Logging
+## 4.6. Hybrid Logging
 Libnvmmio为了面对不同的读写密集情况，对不同的文件采用log policy（undo or redo）。
 * 对于读密集的情况使用undo log
 * 对于写密集的情况使用redo log
@@ -121,9 +121,8 @@ Libnvmmio为了面对不同的读写密集情况，对不同的文件采用log p
 ![avatar](./photo/4.png)
 
 
-# 代码分析
-## 数据结构
-### 相关结构体定义
+# 5. 代码分析
+## 5.1. 数据结构
 **log_entry_struct**：索引条目结构（index entry），被持久化到PM上，对应文件`$pmem_path/.libnvmmio-$libnvmmio_pid/entries.log"`
 ```c
 typedef struct log_entry_struct {
@@ -164,5 +163,133 @@ typedef struct mmap_area_struct {
 } uma_t;
 ```
 
+**fd_mapaddr_struct**：记录文件相关的信息，以文件描述符为索引，利用该结构体数组可以通过fd快速查询到文件的相关信息，例如文件的元数据信息uma。
+```c
+/**
+ * @brief 记录文件相关的数据
+ * 
+ */
+typedef struct fd_mapaddr_struct {
+  void *addr; // 记录映射起始地址
+  off_t off;  // 文件内偏移
+  char pathname[PATH_SIZE];
+  size_t mapped_size; // 映射空间的大小，一般不变，用于unmap时的参数
+  size_t written_file_size; // 映射文件的有效数据长度
+  size_t current_file_size; // 文件在nvm上的大小
+  int dup; // 记录复制的文件描述符次数
+  int dupfd;  // 指示当前的fd是否是dup来的。如果fd_table[fd].dupfd != fd.则说明通过调用nvdup产生的fd。
+  int open; // 文件被打开的次数，即打开同一文件产生的不同的文件描述符的个数（不包括dup）
+  int increaseCount;  // 文件在nvm上空间扩展的次数，初始值为1
+  uma_t *fd_uma;
+} fd_addr;
+```
 
-fd_mapaddr_struct
+**log_table_struct**: 索引树radix tree中的节点结构。
+```c
+/**
+ * @brief radix tree的内部节点
+ * 
+ * @param count 具有的子节点树
+ * @param type LGD、LUD、LMD前三层。TABLE：存放index entry的table层
+ * @param log_size 指向的log entry的大小
+ * @param index 在当前桶阵列的index
+ * @param entries 指向的log entries或者下一级桶阵列
+ * 
+ */
+typedef struct log_table_struct {
+  int count; 
+  log_size_t log_size;
+  enum table_type_enum type;
+  struct log_table_struct *parent;
+  int index;
+  void *entries[PTRS_PER_TABLE];
+} log_table_t;
+```
+需要注意的是，radix tree的构建并不是一步到位的，而是每次需要访问到对应的桶阵列（table）时，才从已申请空间的global_table_list中分配。只有当`TYPE == TABLE`，成员log_sizeLMD才有意义。
+
+## 5.2. 空间分配
+相关代码位于[alloctor.c](src/allocator.c)
+### 5.2.1. 全局空间链表
+```c
+static freelist_t *global_tables_list = NULL;/* 指向table空间的链表指针 */
+static freelist_t *global_entries_list = NULL; /* 指向index entries空间的指针链表指针 */
+static freelist_t *global_data_list[NR_LOG_SIZES] = {NULL, }; /* 指向log entries空间的链表指针数组 */
+static freelist_t *global_uma_list = NULL;/* 指向uma空间的链表指针 */
+```
+在每次调用`open`函数打开一个文件时，都会继续初始化检查。调用`init_libnvmmio`以初始化，函数框架如下：
+```html
+|-- init_libnvmmio
+    |-- init_env() 设置pmem_path
+    |-- init_global_freelist 申请空间
+        |-- create_global_tables_list 申请
+        |-- create_global_entries_list
+        |-- create_global_data_list
+        |-- create_global_umas_list
+    |-- init_radixlog 初始化radix tree
+    |-- init_uma  
+    |-- init_base_address
+```
+所有global_list的类型都为`freelist_struct`，结构如下：
+```c
+typedef struct freelist_struct {
+  list_node_t *head;  // 指向链表头
+  unsigned long count;  // 链表节点个数
+  pthread_mutex_t mutex; 
+} freelist_t;
+```
+以`create_global_tables_list`为例，由于table（radix树中的桶阵列）不需要持久化到PM上，于是首先创建一个匿名映射（对于`global_entries_list`而言，则是先在PM上创建文件并申请相应的空间，然后再建立映射），然后调用`create_list`创建链表。
+```c
+for (i = 0; i < count; i++) {
+    node = alloc_list_node();
+    node->ptr = address + (i * size);// 指向mmap file中对应的位置
+    node->next = head;
+    head = node;
+
+    if (tail && *tail == NULL) {
+      *tail = node;
+    }
+  }
+```
+在创建链表时，首先申请一个链表节点（`list_node_t`）空间，根据传入的size来确定该节点指向的映射空间起始地址，同时将该节点从链表头插入。
+
+![avatar](photo/global_tabel_list.png , "test")
+
+### 5.2.2. 本地空间链表
+```c
+static __thread freelist_t *local_tables_list = NULL;
+static __thread freelist_t *local_entries_list = NULL;
+static __thread freelist_t *local_data_list[NR_LOG_SIZES] = {NULL, };
+```
+本地空间链表构造上与global_list一致，在每次申请空间时，首先从对应的local_list中获取，当local_list为空时，则先用global_list中的节点进行填充，再从local_list中进行获取。
+
+### 5.2.3. 空间申请与回收
+下面用实例来说明空间的申请和回收操作。考虑radix_tree中的索引过程，通过虚拟地址address索引到对应的index entry所在的table，该功能有函数`get_log_table`实现。部分代码片段如下：
+```c
+log_table_t *get_log_table(unsigned long address) {
+  log_table_t *lud, *lmd, *table;
+  unsigned long index;
+  /* 获得LUD、LMD */
+  /* 获得 Log Table */
+  index = lmd_index(address);
+  table = lmd->entries[index];
+
+  if (table == NULL) {
+    table = alloc_log_table(lmd, index, TABLE);
+    if (!__sync_bool_compare_and_swap(&lmd->entries[index], NULL, table)) {
+      // free(table);
+      table = lmd->entries[index];
+    }
+  }
+
+  return table;
+}
+```
+流程如下：
+1. 利用address中对应的LMD bits来获得对应的table。
+2. 如果table为空，执行`alloc_log_table`
+   1. ceshi 
+3. 利用原子操作，将申请的table赋值到LMD。
+
+
+## 5.3. 函数实现
+n
