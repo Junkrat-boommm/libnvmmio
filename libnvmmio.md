@@ -122,6 +122,7 @@ Libnvmmio为了面对不同的读写密集情况，对不同的文件采用log p
 
 
 # 5. 代码分析
+TODO： 添加代码文件结构
 ## 5.1. 数据结构
 **log_entry_struct**：索引条目结构（index entry），被持久化到PM上，对应文件`$pmem_path/.libnvmmio-$libnvmmio_pid/entries.log"`
 ```c
@@ -192,8 +193,8 @@ typedef struct fd_mapaddr_struct {
  * @param count 具有的子节点树
  * @param type LGD、LUD、LMD前三层。TABLE：存放index entry的table层
  * @param log_size 指向的log entry的大小
- * @param index 在当前桶阵列的index
- * @param entries 指向的log entries或者下一级桶阵列
+ * @param index 在上一级桶阵列的index
+ * @param entries 指向的index entries或者下一级桶阵列
  * 
  */
 typedef struct log_table_struct {
@@ -205,7 +206,7 @@ typedef struct log_table_struct {
   void *entries[PTRS_PER_TABLE];
 } log_table_t;
 ```
-需要注意的是，radix tree的构建并不是一步到位的，而是每次需要访问到对应的桶阵列（table）时，才从已申请空间的global_table_list中分配。只有当`TYPE == TABLE`，成员log_sizeLMD才有意义。
+需要注意的是，radix tree的构建并不是一步到位的，而是每次需要访问到对应的桶阵列（table）时，才从已申请空间的global_table_list中分配。只有当`TYPE == TABLE`，成员log_size才有意义，其他情况下为4K。
 
 ## 5.2. 空间分配
 相关代码位于[alloctor.c](src/allocator.c)
@@ -268,28 +269,204 @@ static __thread freelist_t *local_data_list[NR_LOG_SIZES] = {NULL, };
 log_table_t *get_log_table(unsigned long address) {
   log_table_t *lud, *lmd, *table;
   unsigned long index;
-  /* 获得LUD、LMD */
-  /* 获得 Log Table */
-  index = lmd_index(address);
-  table = lmd->entries[index];
+  /* LUD */
+  index = lgd_index(address);
+  lud = lgd->entries[index];
 
-  if (table == NULL) {
-    table = alloc_log_table(lmd, index, TABLE);
-    if (!__sync_bool_compare_and_swap(&lmd->entries[index], NULL, table)) {
-      // free(table);
-      table = lmd->entries[index];
+  if (lud == NULL) {
+    lud = alloc_log_table(lgd, index, LUD);
+
+    if (!__sync_bool_compare_and_swap(&lgd->entries[index], NULL, lud)) {
+      // free(lud);
+      lud = lgd->entries[index];
     }
   }
-
+  /* 获得 lmd、Log Table */
+  // ···
   return table;
 }
 ```
 流程如下：
-1. 利用address中对应的LMD bits来获得对应的table。
-2. 如果table为空，执行`alloc_log_table`
-   1. ceshi 
-3. 利用原子操作，将申请的table赋值到LMD。
+1. 利用address中对应的LGD bits来获得对应的LMD桶阵列。
+2. 如果获得的lud为空，执行`alloc_log_table`
+   1. 判断`fill_local_tables_list`中是否有剩余节点
+   2. 若有，则释放该节点，并返回该节点指向的table，结束。
+   3. 若无，调用`fill_local_tables_list`，用global_tables_list对其进行填充。
+3. 利用原子操作，将申请的table赋值到lgd中。
+4. 执行上述流程获取LMD和log table，并返回log table
 
+流程图如下：
 
-## 5.3. 函数实现
-n
+![avatar](photo/7.png)
+
+过程示意图如下：
+
+![avatar](photo/8.png)
+
+当global_tables_list中的剩余节点的个数小于一个阈值（`MAX_FREE_NODES`=2048，首次创建global_tables_list时的个数为10*`MAX_FRE_NODES`）时，会触发一个后台线程，执行fill_global_tables_list进行填充。
+其他例如index entries（entries_list）、log entries（data_list）的空间分配也是与此类似。
+TODO：空间回收流程
+关于回收，entries和data空间会回收到链中，但是table貌似没有回收的概念。
+
+## 元数据索引
+### index entry
+这一部分介绍index entry的索引实现。
+1. LDG、LUD和LMD中的索引方式
+```c
+static inline unsigned long lgd_index(unsigned long address) {
+  return (address >> LGD_SHIFT) & (PTRS_PER_TABLE - 1);
+}
+
+static inline unsigned long lud_index(unsigned long address) {
+  return (address >> LUD_SHIFT) & (PTRS_PER_TABLE - 1);
+}
+
+static inline unsigned long lmd_index(unsigned long address) {
+  return (address >> LMD_SHIFT) & (PTRS_PER_TABLE - 1);
+}
+```
+`lgd_index`、`lud_index`和`lmd_index`分别获取虚拟地址中用于在LDG、LUD和LMD中的索引地址。一些宏的定义如下表。
+|     macro      | define |
+| :------------: | :----: |
+|   LGD_SHIFT    |   39   |
+|   LUD_SHIFT    |   30   |
+|   LMD_SHIFT    |   21   |
+| PTRS_PER_TABLE |  1<<9  |
+2. Table和Log entry的索引方式
+这一部分需要根据log_size来判断address最后21位中的索引功能。在初始化table的时候，Libnvmmio会通过`set_log_size`函数将log_size设置为最小的大于record_size（写入数据长度）的2的整数倍值（不小于4K）。
+假设log_size = 2^k。则最低k bits是用于在log_entries中的偏移，剩下的位index entry在table中的偏移。
+```c
+inline unsigned long table_index(log_size_t log_size, unsigned long address) {
+  return (address >> LOG_SHIFT(log_size)) & (NUM_ENTRIES(log_size) - 1);
+}
+```
+`LOG_SHIFT`的宏定义为
+```c
+#define LOG_SHIFT(s) (LMD_SHIFT - ((LMD_SHIFT - PAGE_SHIFT) - s))
+```
+实现的功能即计算第k~21比特的值，也即index entry在table中的索引。
+
+### uma(Per-File Matedata)索引
+这一部分介绍uma的索引方式。
+前文介绍了uma是通过rbtree组织的，并用一个静态数据（大小为8）充当cache。判断一个虚拟地址是否对应着uma的逻辑如下：
+```c
+uma->start <= addr && addr < uma->end // addr和uma两者对应
+```
+查找流程图如下：
+
+![avatar](photo/9.png)
+
+## nv-prefix function
+这一部分将介绍主要的读写流程和同步操作，一起Libnvmmio提供的一些其他mmap io操作。
+### nvopen
+```c
+/**
+ * @brief 打开一个文件，并且建立映射，可以通过flags来设置是否选择普通打开
+ * @param path 路径
+ * @param flags 
+ * @param ... 
+ * @return int 
+ */
+int nvopen(const char *path, int flags, ...)
+```
+在调用`nvopen`函数时可以通过参数flags来决定是否使用user-level mmap io。`nvopen`会在打开文件之后建立映射，并且用相关的信息存入到`fd_table[fd]`中，包括当前文件偏移量、映射文件大小以及映射文件地址等。在建立映射前，会先对文件进行扩展，方便映射后进行写入。
+建立映射的函数位`nvmmap`，定义如下：
+```c
+/**
+ * @brief 建立文件映射，并且记录uma
+ * 
+ * @param offset 一般设置为0，代表为文件起始处开始映射
+ */
+void *nvmmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset)
+```
+函数实现的功能包括：
+1. 调用`init_libnvmmio`进行初始化。
+2. 调用`mmap`建立映射
+3. 申请uma空间，并赋值。epoch为1，log polic初始采用redo log
+4. 调用`create_sync_thread`创建一个后台线程，定期执行`sync_uma`函数，用于后台同步该文件。
+5. 将该uma插入到rbtree以及umacache中。
+### nvwrite
+```c
+/**
+ * @brief 将buf缓冲区中的cnt字节的数据写入到对应文件中
+ * 
+ * @param fd 文件描述符
+ * @param buf 待写入的数据
+ * @param cnt 待写入的数据长度
+ * @return ssize_t 
+ */
+ssize_t nvwrite(int fd, const void *buf, size_t cnt)
+```
+nvwrite的流程图如下：
+
+`nvwrite(fd, buf, cnt)`:写操作的入口，流程如下
+1. get_fd_addr_cur(fd)获得dst
+2. pwriteToMap(fd, buf, cnt, dst)
+   1. 通过fd获取uma信息
+   2. 若空间不足，则进行重映射并expand。
+      1. 扩展文件大小（PM空间）
+      2. 调用`nvmsync`
+      3. munmap uma：从rbtree中删除该uma的信息
+      4. 调用`nvmmap`
+      5. 修改`fd_table`中的信息并返回uma
+   3. 写请求次数加一
+   4. 调用`nvmemcpy_write`
+3. 更新静态数组fd_table中对应的信息，包括offset、written_file_size和fd_uma等。
+```c
+/**
+ * @brief 处理写请求
+ * 
+ * @param dst 写入的目标地址
+ * @param src 待写入数据地址
+ * @param record_size 写入数据大小
+ * @param uma 文件元数据信息
+ */
+void nvmemcpy_write(void *dst, const void *src, size_t record_size, uma_t *uma)
+```
+`nvmemcpy_write(dst, buf, cnt, dst_uma)`：将数据写入到log entry中
+1. 对uma上锁
+2. 获取对应的Table（从`local_tables_list`中获取）
+3. 根据写入内容的大小设置`log_size`(`log_entry`的大小)
+4. 获得entry在table中的索引
+   1. 从table中索引对应的index entry（若为`NULL`，从`local_entries_list`中申请，其中包括对log entry的空间申请，从`local_data_list`中获取）
+   2. 对index entry上锁
+   3. 若是已经commit，则调用`sync_entry`
+   4. 根据log policy执行写入操作`nvmmio_write`
+      * 如果是redo log，直接将数据写入log中。
+      * 如果是unde log，复制一份元数据到log中，之后在文件上就地更新。
+   5. 处理overwrite。这一部分的逻辑主要是将pre_log和刚写的log中间的空白进行填充，以保证entry中数据的连续性，并能够通过`index_entry`中的offset和len记录有效数据。
+   6. 记录index_entry中的offset、len和dst。
+   7. 持久化index_entry，调用`nvmmio_flush`（先flush后fence）。
+5. 如果是undo log，则就地更新。
+nvmemcpy_write的流程图如下所示：
+![avatar](photo/10.png)
+
+`nvmmio_write`:真正执行数据写入，调用pmdk中的方法进行写入。
+```c
+/**
+ * @brief 将src处的数据写入到PM中，dest是对应的映射地址
+ */
+static inline void nvmmio_write(void *dest, const void *src, size_t n,
+                                bool fence) {
+  LIBNVMMIO_INIT_TIME(nvmmio_write_time);
+  LIBNVMMIO_START_TIME(nvmmio_write_t, nvmmio_write_time);
+
+  pmem_memcpy_nodrain(dest, src, n);/* 从内存向PM拷贝数据，不经过cache，所以不需要flush，只需要fense */
+
+  if (fence) {
+    nvmmio_fence();
+  }
+
+  LIBNVMMIO_END_TIME(nvmmio_write_t, nvmmio_write_time);
+}
+```
+
+### nvread
+### sync
+### sync_backround
+### 一些其他的mmio函数，例如nvmemcmp
+# 
+
+# 问题
+
+一些比较细的东西并没有加进去，包括fd_table[]中的一些成员的意义，以及fd_indirection[fd]
