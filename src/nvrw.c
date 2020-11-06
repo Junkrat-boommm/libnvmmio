@@ -29,20 +29,20 @@
 //#define __OPEN_NEEDS_MODE(oflag) (((oflag) & O_CREAT) != 0)
 
 /**
- * @brief Per-File Metadata
+ * @brief 记录文件相关的数据
  * 
  */
 typedef struct fd_mapaddr_struct {
   void *addr; // 记录映射起始地址
-  off_t off;
+  off_t off;  // 文件内偏移
   char pathname[PATH_SIZE];
-  size_t mapped_size;
-  size_t written_file_size;
-  size_t current_file_size;
+  size_t mapped_size; // 映射空间的大小，一般不变，用于unmap时的参数
+  size_t written_file_size; // 映射文件的有效数据长度
+  size_t current_file_size; // 文件在nvm上的大小
   int dup; // 记录复制的文件描述符次数
   int dupfd;  // 指示当前的fd是否是dup来的。如果fd_table[fd].dupfd != fd.则说明通过调用nvdup产生的fd。
-  int open;
-  int increaseCount;
+  int open; // 文件被打开的次数，即打开同一文件产生的不同的文件描述符的个数（不包括dup）
+  int increaseCount;  // 文件在nvm上空间扩展的次数，初始值为1
   uma_t *fd_uma;
 } fd_addr;
 
@@ -235,8 +235,7 @@ static inline int fd_validity(int fd) {
 }
 
 /**
- * @brief 打开一个文件，并且建立映射
- * 可以通过flags来设置是否选择普通打开
+ * @brief 打开一个文件，并且建立映射，可以通过flags来设置是否选择普通打开
  * @param path 路径
  * @param flags 
  * @param ... 
@@ -538,6 +537,14 @@ ssize_t nvread(int fd, void *buf, size_t cnt) {
   return ret;
 }
 
+/**
+ * @brief 将buf缓冲区中的cnt字节的数据写入到对应文件中
+ * 
+ * @param fd 文件描述符
+ * @param buf 待写入的数据
+ * @param cnt 待写入的数据长度
+ * @return ssize_t 
+ */
 ssize_t nvwrite(int fd, const void *buf, size_t cnt) {
   void *dst;
 

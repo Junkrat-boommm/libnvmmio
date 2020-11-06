@@ -1,3 +1,34 @@
+- [1. 背景](#1-背景)
+- [2. 目的](#2-目的)
+- [3. 存在的问题](#3-存在的问题)
+- [4. libnvmmio](#4-libnvmmio)
+  - [4.1. 设计目标和实现策略](#41-设计目标和实现策略)
+  - [4.2. Overall Architecture](#42-overall-architecture)
+    - [4.2.1. memory-mapped IO](#421-memory-mapped-io)
+    - [4.2.2. 用户级logging](#422-用户级logging)
+    - [4.2.3. 应用透明](#423-应用透明)
+  - [4.3. Scalable Logging](#43-scalable-logging)
+  - [4.4. Epoch-based Background Checkpointing](#44-epoch-based-background-checkpointing)
+  - [4.5. Per-File Metadata](#45-per-file-metadata)
+  - [4.6. Hybrid Logging](#46-hybrid-logging)
+- [5. 代码分析](#5-代码分析)
+  - [5.1. 数据结构](#51-数据结构)
+  - [5.2. 空间分配](#52-空间分配)
+    - [5.2.1. 全局空间链表](#521-全局空间链表)
+    - [5.2.2. 本地空间链表](#522-本地空间链表)
+    - [5.2.3. 空间申请与回收](#523-空间申请与回收)
+  - [5.3. 元数据索引](#53-元数据索引)
+    - [5.3.1. index entry](#531-index-entry)
+    - [5.3.2. uma(Per-File Matedata)索引](#532-umaper-file-matedata索引)
+  - [5.4. nv-prefix function](#54-nv-prefix-function)
+    - [5.4.1. nvopen](#541-nvopen)
+    - [5.4.2. nvwrite](#542-nvwrite)
+    - [5.4.3. nvread](#543-nvread)
+    - [5.4.4. msync](#544-msync)
+    - [5.4.5. sync_backround](#545-sync_backround)
+    - [5.4.6. 一些其他的函数](#546-一些其他的函数)
+    - [5.4.7. 整个项目框架](#547-整个项目框架)
+- [6. 其他](#6-其他)
 # 1. 背景
 传统的文件系统限制了NVM的性能（software overhead）
 
@@ -33,17 +64,17 @@
 Libnvmmio是一个运行在应用程序所在地址空间的文件库，并且依赖于底层的文件系统。Libnvmmio通过拦截IO请求并将其转换成对应的内存操作从而降低软件开销。需要注意的是，Libnvmmio只是对数据请求进行拦截，而对于元数据的操作请求则是直接交由内核处理。
 
 ![avatar](./photo/2.png)
-### 4.2.1. **memory-mapped IO**
+### 4.2.1. memory-mapped IO
 为了直接访问NVM。libnvmmio通过mmap建立文件映射，应分别用memcpy和non-temporal memcpy(MOVNT)来代替read和write方法。有如下两个好处。
 * 当持久化和读取数据时，能够避免复杂的内核IO路径
 * read/write操作涉及复杂的索引操作来定位物理块。而通过mmap io在建立映射后通过内存映射地址和偏移即可访问文件数据。而且也并不需要通过MMU和TLB完成到物理空间的映射，减少了大量的CPU开销。
 
-### 4.2.2. **用户级logging**
+### 4.2.2. 用户级logging
 即通过用户级日志记录来提供原子性。有以下两个优点。
 * 粒度更小，即使极少量的数据写入也不会产生写放大。
 * 不需要通过对TLB中的脏位来进行判断写回。
 
-### 4.2.3. **应用透明**
+### 4.2.3. 应用透明
 即能够很容易的对使用write/read方法的应用程序进行修改。并且对于不需要保证原子性的IO操作提供了POSIX版本的memcpy。支持原子性的函数命名统一添加nv前缀（如nvmmap，nvmemcpy等）
 
 ## 4.3. Scalable Logging
@@ -122,7 +153,6 @@ Libnvmmio为了面对不同的读写密集情况，对不同的文件采用log p
 
 
 # 5. 代码分析
-TODO： 添加代码文件结构
 ## 5.1. 数据结构
 **log_entry_struct**：索引条目结构（index entry），被持久化到PM上，对应文件`$pmem_path/.libnvmmio-$libnvmmio_pid/entries.log"`
 ```c
@@ -308,8 +338,8 @@ log_table_t *get_log_table(unsigned long address) {
 TODO：空间回收流程
 关于回收，entries和data空间会回收到链中，但是table貌似没有回收的概念。
 
-## 元数据索引
-### index entry
+## 5.3. 元数据索引
+### 5.3.1. index entry
 这一部分介绍index entry的索引实现。
 1. LDG、LUD和LMD中的索引方式
 ```c
@@ -346,7 +376,7 @@ inline unsigned long table_index(log_size_t log_size, unsigned long address) {
 ```
 实现的功能即计算第k~21比特的值，也即index entry在table中的索引。
 
-### uma(Per-File Matedata)索引
+### 5.3.2. uma(Per-File Matedata)索引
 这一部分介绍uma的索引方式。
 前文介绍了uma是通过rbtree组织的，并用一个静态数据（大小为8）充当cache。判断一个虚拟地址是否对应着uma的逻辑如下：
 ```c
@@ -356,9 +386,9 @@ uma->start <= addr && addr < uma->end // addr和uma两者对应
 
 ![avatar](photo/9.png)
 
-## nv-prefix function
+## 5.4. nv-prefix function
 这一部分将介绍主要的读写流程和同步操作，一起Libnvmmio提供的一些其他mmap io操作。
-### nvopen
+### 5.4.1. nvopen
 ```c
 /**
  * @brief 打开一个文件，并且建立映射，可以通过flags来设置是否选择普通打开
@@ -385,7 +415,7 @@ void *nvmmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset)
 3. 申请uma空间，并赋值。epoch为1，log polic初始采用redo log
 4. 调用`create_sync_thread`创建一个后台线程，定期执行`sync_uma`函数，用于后台同步该文件。
 5. 将该uma插入到rbtree以及umacache中。
-### nvwrite
+### 5.4.2. nvwrite
 ```c
 /**
  * @brief 将buf缓冲区中的cnt字节的数据写入到对应文件中
@@ -397,7 +427,6 @@ void *nvmmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset)
  */
 ssize_t nvwrite(int fd, const void *buf, size_t cnt)
 ```
-nvwrite的流程图如下：
 
 `nvwrite(fd, buf, cnt)`:写操作的入口，流程如下
 1. get_fd_addr_cur(fd)获得dst
@@ -438,8 +467,33 @@ void nvmemcpy_write(void *dst, const void *src, size_t record_size, uma_t *uma)
    6. 记录index_entry中的offset、len和dst。
    7. 持久化index_entry，调用`nvmmio_flush`（先flush后fence）。
 5. 如果是undo log，则就地更新。
+
 nvmemcpy_write的流程图如下所示：
 ![avatar](photo/10.png)
+
+`sync_entry`:
+```c
+/**
+ * @brief 对提交的log entry进行写入，需要根据
+ * 
+ * @param entry 
+ * @param uma 
+ */
+static void sync_entry(log_entry_t *entry, uma_t *uma) {
+  void *dst, *src;
+
+  if (entry->policy == REDO) {// 如果是redo log，写回到映射文件中
+    dst = entry->dst + entry->offset; 
+    src = entry->data + entry->offset;
+    nvmmio_write(dst, src, entry->len, true);
+  }
+  entry->epoch = uma->epoch;
+  entry->policy = uma->policy;
+  entry->len = 0;
+  entry->offset = 0;
+  nvmmio_flush(entry, sizeof(log_entry_t), true);/* 持久化到PM */
+}
+```
 
 `nvmmio_write`:真正执行数据写入，调用pmdk中的方法进行写入。
 ```c
@@ -461,12 +515,156 @@ static inline void nvmmio_write(void *dest, const void *src, size_t n,
 }
 ```
 
-### nvread
-### sync
-### sync_backround
-### 一些其他的mmio函数，例如nvmemcmp
-# 
+`nvmmio_flush`:
+```c
+/**
+ * @brief 调用pmem_flush
+ */
+static inline void nvmmio_flush(const void *addr, size_t n, bool flush) {
+  LIBNVMMIO_INIT_TIME(nvmmio_flush_time);
+  LIBNVMMIO_START_TIME(nvmmio_flush_t, nvmmio_flush_time);
 
-# 问题
+  pmem_flush(addr, n);
 
-一些比较细的东西并没有加进去，包括fd_table[]中的一些成员的意义，以及fd_indirection[fd]
+  if (flush) {
+    nvmmio_fence();
+  }
+
+  LIBNVMMIO_END_TIME(nvmmio_flush_t, nvmmio_flush_time);
+}
+```
+### 5.4.3. nvread
+read操作相对简单，操作流程如下：
+**nvread(int fd, void *buf, size_t cnt)**
+   1. `get_fd_addr_cur()`获得src
+   2. 判断是否是mapped fd
+   3. 通过`preadFromMap()`读取数据
+      1. 通过fd获取uma。
+      2. read次数加1。
+      3. 根据log类型进行数据读取
+         - UNDO： 直接调用`nvmmio_memcpy`，对映射地址进行读取，能完全读取
+         - REDO：调用`nvmemcpy_read_redo`
+           - 利用循环对addr对应的所有log_entry中的数据进行读取。不过因为不一定有进行修改，所以收redo log中的数据并不一定完全覆盖读取请求，所有是很有可能发生读取缺失的。不过代码并未再从映射地址进行读取。
+   4. 修改fd_table记录的文件偏移off。
+### 5.4.4. msync
+Libnvmmio提供函数`nvmsync`，函数实现如下：
+```c
+/**
+ * @brief SYNC
+ */
+int nvmsync(void *addr, size_t len, int flags) {
+  uma_t *uma;
+
+  len = (len + (~PAGE_MASK)) & PAGE_MASK;
+  uma = find_uma(addr);
+  if (__glibc_unlikely(uma == NULL)) {
+    handle_error("find_uma() failed");
+  }
+
+	return nvmsync_uma(addr, len, flags, uma);
+}
+```
+该函数将显式的将指定地址处的指定长度数据对应的log文件写回。主要实现通过addr查找到对应的uma，再调用`nvmsync_uma`来实现同步。
+
+`nvmsync_uma`函数功能：每次sync，全局版本号epoch加1，刷写uma->epoch（Libnvmmio并为对uma中的其他成员进行刷写），并根据write/read的比例来判断是否需要修改log policy，如果log policy改变，则调用`nvmsync_sync`将该文件对应的所有log entries进行写回。如果log policy没有发生改变，则直接返回，已经committed的log entries将在后台被写回或者在下一次write时写回。
+函数原型如下：
+```c
+/**
+ * @brief msync，刷写uma->epoch，并调用nvmsync_sync持久化文件
+ * 
+ * @param addr 内存映射文件地址
+ * @param len 内存映射文件大小
+ * @param flags 
+ * @param uma 
+ * @return int 
+ */
+int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma)
+```
+`sync_uma`函数流程如下：
+1. 对uma上锁。
+2. 全局epoch加1
+3. flush uma，只是flush uma->epoch. 
+4. 更新log policy，如果策略不变则直接返回，后台进行sync
+5. 调用**`nvmsync_sync`**同步log entries。
+
+**`nvmsync_sync`**真正实现将log entries中的有效数据写回。
+函数原型及解释如下：
+```c
+/**
+ * @brief 将地址addr处开始的len字节数据对应的log entries进行写回。
+ * 
+ * nvmsync_sync <- nvmsync_uma <- nvmsync
+ * 
+ * @param addr 内存映射文件地址
+ * @param len 内存映射文件大小
+ * @param new_epoch 新的global epoch的值
+ */
+static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch)
+```
+函数主要工作流程如下：
+1. 根据address获得映射的table以及对应的第一个entry（一个文件获取对应多个entry甚至跨table）。
+2. 判断该entry是否已被committed，并且进行上锁。
+3. 判断log policy，如果redo log，将log entries中的有效数据写回（`nvmmio_write`）。
+4. 回收index_entry，log_entry的空间，并且table中的index entry计数减1。
+5. 进行新一轮的循环，直到所有对应的log entries都已全部写回。
+整个*MSYNC*操作的实现流程图如下：
+
+![avatar](photo/11.png)
+
+### 5.4.5. sync_backround
+在建立映射`nvmmap`时，会在结束前调用`create_ysnc_thread`函数，创建一个后台线程，该线程执行的函数会每过一段时间调用`sync_uma`函数来同步整个文件。`sync_uma`的逻辑有`nvmsync_sync`类似。不同之处在于，前者是对整个文件进行同步，而后者可以通过参数决定起始地址和数据长度。
+```c
+/**
+ * @brief 后台同步线程执行函数
+ */
+static void *sync_thread_func(void *parm) {
+  uma_t *uma;
+  uma = (uma_t *)parm;
+
+  LIBNVMMIO_DEBUG("%d uma thread start on %d", uma->id, sched_getcpu());
+
+  while (true) {
+    usleep(SYNC_PERIOD);
+    sync_uma(uma);
+  }
+  return NULL;
+}
+```
+### 5.4.6. 一些其他的函数
+Libnvmmio针对于其他的内存操作也提供相关的函数，比如nvmemset，nvmemcpy，具体的实现都是先通过读取映射文件中的内容到内存中，然后在调用相关的内存操作函数（memset、memcpy）。
+
+此外，
+
+### 5.4.7. 整个项目框架
+```html
+|-- LIBNVMMIO
+    |-- examples 一些使用示例
+    |-- include
+        |-- libnvmmio.h
+    |-- src
+        |-- allocator.c 映射空间管理和分配
+        |-- allocator.h
+        |-- debug.c 一些输出信息函数
+        |-- debug.h
+        |-- internal.h  宏定义
+        |-- list.h 定义uma中用来组织同步线程的链表，实际并无意义
+        |-- Makefile
+        |-- nvmmio.c  文件操作的底层实现mmap io
+        |-- nvmmio.h
+        |-- nvrw.c  文件io
+        |-- nvrw.h
+        |-- radixlog.c index组织结构
+        |-- radixlog.h 
+        |-- rbtree.c  文件元数据的组织结构
+        |-- rbtree.h
+        |-- uma.c 文件元数据相关操作
+        |-- uma.h
+        |-- libnvmmio.md 本文件
+        |-- README.md
+
+```
+
+# 6. 其他
+
+1. 一些比较细的东西并没有加进去，包括fd_table[]中的一些成员的意义，以及fd_indirection[fd]。
+2. sync时，并不会flush index_entry。只有在write的时候sync_entry中会flush index entry。

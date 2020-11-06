@@ -13,7 +13,7 @@
 **nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma)**持久化uma，并调用nvmsync_sync持久化文件
    1. 对uma上锁。
    2. 全局epoch加1
-   3. flush uma. **nvmmio_flush**
+   3. flush uma，只是flush uma->epoch. **nvmmio_flush**
    4. 更新log policy，如果策略不变则直接返回，后台进行sync
    5. 调用**nvmsync_sync**持久化文件
    

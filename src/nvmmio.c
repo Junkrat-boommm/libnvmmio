@@ -591,12 +591,11 @@ static inline log_size_t set_log_size(size_t record_size) {
 /**
  * @brief 处理写请求
  * 
- * @param dst 
- * @param src 
- * @param record_size 
- * @param uma 
+ * @param dst 写入的目标地址
+ * @param src 待写入数据地址
+ * @param record_size 写入数据大小
+ * @param uma 文件元数据信息
  */
-//XXX
 void nvmemcpy_write(void *dst, const void *src, size_t record_size,
                            uma_t *uma) {
   log_entry_t *entry;
@@ -930,7 +929,6 @@ nvmemcpy_out:
  * @param len 内存映射文件大小
  * @param new_epoch 
  */
-// XXX
 static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
   log_table_t *table;
   log_entry_t *entry;
@@ -943,7 +941,7 @@ static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
 
   table = get_log_table(address);
   log_size = table->log_size;
-  nrpages = len >> LOG_SHIFT(log_size); // 最多跨越的table的长度
+  nrpages = len >> LOG_SHIFT(log_size); // 最多跨越的log entries的个数
   start = table_index(log_size, address);
 
   if (NUM_ENTRIES(log_size) - start > nrpages)
@@ -971,7 +969,7 @@ static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
               nvmmio_write(dst, src, entry->len, false);
             }
             table->entries[i] = NULL;
-            nvmmio_fence();
+            nvmmio_fence(); 
 
             free_log_entry(entry, log_size, false);
             atomic_decrease(&table->count);
@@ -1000,7 +998,7 @@ static void nvmsync_sync(void *addr, size_t len, unsigned long new_epoch) {
 }
 
 /**
- * @brief fsync，持久化uma(Memory Mapped File)，并调用nvmsync_sync持久化文件
+ * @brief msync，刷写uma->epoch，并调用nvmsync_sync持久化文件
  * 
  * @param addr 内存映射文件地址
  * @param len 内存映射文件大小
@@ -1018,7 +1016,7 @@ int nvmsync_uma(void *addr, size_t len, int flags, uma_t *uma) {
   LIBNVMMIO_INIT_TIME(fsync_time);
   LIBNVMMIO_START_TIME(fsync_t, fsync_time);
 
-  if (offset_in_page((unsigned long)addr)) {
+  if (offset_in_page((unsigned long)addr)) { // CONFUSE:为什么要是按页对齐
     ret = -1;
     goto nvmsync_out;
   }

@@ -30,10 +30,10 @@ static pthread_cond_t background_table_alloc_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t background_table_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int background_table_alloc = false;
 
-static freelist_t *global_tables_list = NULL;/* 指向table空间的链表指针 */
-static freelist_t *global_entries_list = NULL; /* 指向entries空间的指针链表指针 */
-static freelist_t *global_data_list[NR_LOG_SIZES] = {NULL, }; /* 指向data空间的链表指针 */
-static freelist_t *global_uma_list = NULL;/* 指向uma空间的链表指针 */
+static freelist_t *global_tables_list = NULL;/* 指向table空间的指针链表 */
+static freelist_t *global_entries_list = NULL; /* 指向entries空间的指针链表 */
+static freelist_t *global_data_list[NR_LOG_SIZES] = {NULL, }; /* 指向data空间的指针链表 */
+static freelist_t *global_uma_list = NULL;/* 指向uma空间的指针链表 */
 
 static __thread freelist_t *local_tables_list = NULL;
 static __thread freelist_t *local_entries_list = NULL;
@@ -650,7 +650,6 @@ log_table_t *alloc_log_table(log_table_t *parent, int index,
   node = local_tables_list->head;
   local_tables_list->head = node->next;
   local_tables_list->count -= 1;
-
   if (__glibc_unlikely(node->ptr == NULL)) {
     handle_error("node->ptr == NULL");
   }

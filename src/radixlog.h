@@ -22,8 +22,17 @@ typedef struct log_entry_struct {
   pthread_rwlock_t *rwlockp;
 } log_entry_t;
 
+/**
+ * @brief radix tree的内部节点
+ * 
+ * @param count 具有的子节点树
+ * @param log_size z指向的log entry的大小
+ * @param index 在当前桶阵列的index
+ * @param entries 指向的log entries
+ * 
+ */
 typedef struct log_table_struct {
-  int count;
+  int count; 
   log_size_t log_size;
   enum table_type_enum type;
   struct log_table_struct *parent;
